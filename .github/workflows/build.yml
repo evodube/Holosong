@@ -1,0 +1,97 @@
+name: Build Holosong
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # lets the job push its logs (ci-logs) and the package (dist)
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: xmake-io/github-action-setup-xmake@v1
+        with:
+          xmake-version: latest
+          actions-cache-folder: .xmake-cache
+
+      - name: Cache xmake packages
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/.xmake/packages
+          key: xmake-pkgs-${{ runner.os }}-${{ hashFiles('xmake.lua', 'lib/commonlibf4/xmake.lua', 'lib/commonlibf4/lib/commonlib-shared/xmake.lua') }}
+          restore-keys: xmake-pkgs-${{ runner.os }}-
+
+      - name: Configure
+        id: configure
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          xmake f -m releasedbg -y -v 2>&1 | Tee-Object -FilePath logs/configure.txt
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build
+        id: build
+        if: steps.configure.outcome == 'success'
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          xmake build -y -v Holosong 2>&1 | Tee-Object -FilePath logs/build.txt
+          $code = $LASTEXITCODE
+          Select-String -Path logs/build.txt -Pattern '(: (fatal )?error |error:)' | Select-Object -First 40 | ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }
+          if ($code -ne 0) { exit 1 }
+
+      - name: Publish logs to ci-logs branch
+        if: always()
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path logs | Out-Null
+          "run ${{ github.run_id }} sha ${{ github.sha }} configure=${{ steps.configure.outcome }} build=${{ steps.build.outcome }}" | Out-File logs/STATUS.txt
+          Copy-Item -Recurse logs $env:RUNNER_TEMP/logs-out
+          cd $env:RUNNER_TEMP/logs-out
+          git init -q -b ci-logs
+          git config user.name "ci"; git config user.email "ci@users.noreply.github.com"
+          git add -A; git commit -q -m "logs for run ${{ github.run_id }}"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" ci-logs
+
+      - name: Fail if configure/build failed
+        if: steps.configure.outcome != 'success' || steps.build.outcome != 'success'
+        shell: pwsh
+        run: exit 1
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $out = "package"
+          $plugins = "$out/Data/F4SE/Plugins"
+          New-Item -ItemType Directory -Force -Path "$plugins/Holosong/Fonts" | Out-Null
+          Copy-Item build/out/F4SE/Plugins/Holosong.dll "$plugins/"
+          Copy-Item Holosong.ini "$plugins/"
+          Copy-Item assets/fonts/* "$plugins/Holosong/Fonts/"
+          foreach ($f in "LICENSE.txt","EXCEPTIONS.txt","THIRD-PARTY-NOTICES.txt","README.txt") { Copy-Item $f "$plugins/Holosong/" }
+          Get-ChildItem -Recurse $out | Format-Table FullName, Length
+
+      - name: Publish package to dist branch
+        shell: pwsh
+        run: |
+          Copy-Item -Recurse package $env:RUNNER_TEMP/dist-out
+          if (Test-Path build/out/F4SE/Plugins/Holosong.pdb) { Copy-Item build/out/F4SE/Plugins/Holosong.pdb $env:RUNNER_TEMP/dist-out/ }
+          "run ${{ github.run_id }} sha ${{ github.sha }}" | Out-File $env:RUNNER_TEMP/dist-out/BUILD.txt
+          cd $env:RUNNER_TEMP/dist-out
+          git init -q -b dist
+          git config user.name "ci"; git config user.email "ci@users.noreply.github.com"
+          git add -A; git commit -q -m "Holosong build ${{ github.run_id }}"
+          git push -q -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" dist
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: Holosong
+          path: package/
