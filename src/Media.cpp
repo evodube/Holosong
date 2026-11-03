@@ -118,6 +118,31 @@ namespace Media
 			S.cv.notify_one();
 		}
 
+		// Waits for a Windows media call, but never for ever: a player that doesn't answer (seen in Fallout 4: the first
+		// pass never finished and the widget said "Connecting..." for good) costs a few seconds, not the whole widget.
+		template <class Op>
+		auto Await(const Op& a_op, int a_ms, const char* a_what)
+		{
+			const auto st = a_op.wait_for(std::chrono::milliseconds(a_ms));
+			if (st == winrt::Windows::Foundation::AsyncStatus::Started) {
+				try {
+					a_op.Cancel();
+				} catch (...) {
+				}
+				spdlog::warn("Media: {} didn't answer within {} ms", a_what, a_ms);
+				throw winrt::hresult_error(HRESULT_FROM_WIN32(ERROR_TIMEOUT));
+			}
+			return a_op.GetResults();
+		}
+
+		bool g_firstPass = true;  // the first update logs each step, so a stall shows where it is
+		void Step(const char* a_what)
+		{
+			if (g_firstPass) {
+				spdlog::info("Media: {}", a_what);
+			}
+		}
+
 		// ------------------------------------------------------------ volume mixer
 		std::string ProcessName(DWORD a_pid)
 		{
@@ -306,13 +331,13 @@ namespace Media
 			if (!a_ref) {
 				return false;
 			}
-			auto stream = a_ref.OpenReadAsync().get();
+			auto stream = Await(a_ref.OpenReadAsync(), 4000, "album art");
 			const auto size = static_cast<std::uint32_t>((std::min)(stream.Size(), static_cast<std::uint64_t>(16u << 20)));
 			if (size == 0) {
 				return false;
 			}
 			wss::DataReader reader(stream.GetInputStreamAt(0));
-			const auto      got = reader.LoadAsync(size).get();
+			const auto      got = Await(reader.LoadAsync(size), 4000, "album art data");
 			std::vector<std::uint8_t> bytes(got);
 			reader.ReadBytes(bytes);
 			int   w = 0, h = 0, n = 0;
@@ -388,13 +413,13 @@ namespace Media
 			}
 			switch (a_c.cmd) {
 			case Cmd::PlayPause:
-				a_s.TryTogglePlayPauseAsync().get();
+				Await(a_s.TryTogglePlayPauseAsync(), 3000, "play/pause");
 				break;
 			case Cmd::Next:
-				a_s.TrySkipNextAsync().get();
+				Await(a_s.TrySkipNextAsync(), 3000, "next track");
 				break;
 			case Cmd::Previous:
-				a_s.TrySkipPreviousAsync().get();
+				Await(a_s.TrySkipPreviousAsync(), 3000, "previous track");
 				break;
 			case Cmd::Shuffle:
 				{
@@ -403,7 +428,7 @@ namespace Media
 					if (auto v = info.IsShuffleActive()) {
 						on = v.Value();
 					}
-					a_s.TryChangeShuffleActiveAsync(!on).get();
+					Await(a_s.TryChangeShuffleActiveAsync(!on), 3000, "shuffle");
 					break;
 				}
 			case Cmd::Repeat:
@@ -417,14 +442,14 @@ namespace Media
 					const auto next = mode == MediaPlaybackAutoRepeatMode::None ? MediaPlaybackAutoRepeatMode::List :
 					                  mode == MediaPlaybackAutoRepeatMode::List ? MediaPlaybackAutoRepeatMode::Track :
 					                                                              MediaPlaybackAutoRepeatMode::None;
-					a_s.TryChangeAutoRepeatModeAsync(next).get();
+					Await(a_s.TryChangeAutoRepeatModeAsync(next), 3000, "repeat");
 					break;
 				}
 			case Cmd::Seek:
 				{
 					const auto tl = a_s.GetTimelineProperties();
 					const auto ticks = tl.StartTime().count() + static_cast<std::int64_t>(a_c.value * 10'000'000.0);
-					a_s.TryChangePlaybackPositionAsync(ticks).get();
+					Await(a_s.TryChangePlaybackPositionAsync(ticks), 3000, "seek");
 					break;
 				}
 			default:
@@ -506,6 +531,7 @@ namespace Media
 					{
 						std::vector<std::string> list;
 						std::string              joined;
+						Step("listing the apps");
 						for (const auto& s : mgr.GetSessions()) {
 							list.push_back(winrt::to_string(s.SourceAppUserModelId()));
 							joined += (joined.empty() ? "" : ", ") + list.back();
@@ -518,12 +544,14 @@ namespace Media
 					}
 					if (now >= nextRunning) {
 						nextRunning = now + std::chrono::seconds(2);
+						Step("checking whether the app is running");
 						const bool running = ProcessRunning(volNeedle);
 						if (running != snap.appRunning) {
 							spdlog::info("{} is {}running", set.targetApp, running ? "" : "not ");
 						}
 						snap.appRunning = running;
 					}
+					Step("picking the app");
 					auto session = Pick(mgr, set);
 					for (const auto& c : cmds) {
 						try {
@@ -545,6 +573,7 @@ namespace Media
 							spdlog::info("Controlling: {}", snap.app);
 							lastApp = snap.app;
 						}
+						Step("reading play state");
 						const auto info = session.GetPlaybackInfo();
 						snap.playing = info.PlaybackStatus() == wmc::GlobalSystemMediaTransportControlsSessionPlaybackStatus::Playing;
 						const auto ctl = info.Controls();
@@ -565,6 +594,7 @@ namespace Media
 						} else {
 							snap.repeatKnown = false;
 						}
+						Step("reading the timeline");
 						const auto tl = session.GetTimelineProperties();
 						const double start = tl.StartTime().count() / 1e7, end = tl.EndTime().count() / 1e7;
 						double       pos = tl.Position().count() / 1e7 - start;
@@ -581,7 +611,8 @@ namespace Media
 
 						if (forceProps || now >= nextProps) {
 							nextProps = now + std::chrono::milliseconds(1000);
-							const auto props = session.TryGetMediaPropertiesAsync().get();
+							Step("reading the song's details");
+							const auto props = Await(session.TryGetMediaPropertiesAsync(), 4000, "song details");
 							snap.title = winrt::to_string(props.Title());
 							snap.artist = winrt::to_string(props.Artist());
 							snap.album = winrt::to_string(props.AlbumTitle());
@@ -591,6 +622,7 @@ namespace Media
 								std::vector<std::uint8_t> px;
 								int                       w = 0, h = 0;
 								bool                      ok = false;
+								Step("reading the album art");
 								try {
 									ok = ReadArt(props.Thumbnail(), Lower(snap.app).find("spotify") != std::string::npos, px, w, h);
 								} catch (...) {
@@ -628,6 +660,7 @@ namespace Media
 					snap.volume = -1.0f;
 					snap.muted = false;
 					try {
+						Step("reading the app's volume");
 						for (auto& v : FindVolumes(volNeedle)) {
 							float vol = 0.0f;
 							BOOL  mute = FALSE;
@@ -640,9 +673,8 @@ namespace Media
 					}
 				}
 
-				static bool firstDone = false;
-				if (!firstDone) {
-					firstDone = true;
+				if (g_firstPass) {
+					g_firstPass = false;
 					spdlog::info("Media: first update done - {}", snap.hasSession ? "a player is connected" : "no player found yet");
 				}
 				std::lock_guard lk(S.mtx);

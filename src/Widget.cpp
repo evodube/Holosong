@@ -55,7 +55,8 @@ namespace Widget
 		};
 		const char* const kKeyIni[kKeyCount] = { "iToggleKey", "iCursorKey", "iUndoKey", "iPlayPauseKey", "iNextKey", "iPreviousKey", "iVolumeUpKey", "iVolumeDownKey", "iSettingsKey" };
 		const char* const kKeySection[kKeyCount] = { "General", "General", "Keys", "Keys", "Keys", "Keys", "Keys", "Keys", "General" };
-		const int         kKeyDefault[kKeyCount] = { VK_F7, VK_F6, 'Z', 0, 0, 0, 0, 0, VK_F10 };
+		// Page Down show/hide, Page Up cursor mode (F6/F7 clash with other mods); settings: the gear in cursor mode, no key by default
+		const int         kKeyDefault[kKeyCount] = { VK_NEXT, VK_PRIOR, 'Z', 0, 0, 0, 0, 0, 0 };
 		const char* const kKeyLabel[kKeyCount] = { "Show / hide widget", "Cursor mode", "Undo move (with Ctrl)", "Play / pause", "Next track", "Previous track",
 			"Volume up", "Volume down", "Settings window" };
 		const char* const kKeyHelp[kKeyCount] = {
@@ -756,6 +757,13 @@ namespace Widget
 		// DirectInput calls this on the game's input thread for every key / mouse event (Input.cpp)
 		void OnInputEvent(const Input::Event& a_e)
 		{
+			static std::atomic<int> logged{ 0 };
+			if (a_e.kind == Input::Kind::Key && a_e.down && logged < 12) {
+				++logged;
+				spdlog::info("Key pressed: {} (code {:02X}){}", KeyName(DIKToVirtualKey(a_e.code)), a_e.code,
+					a_e.code == g_keyDik[kKeyCursor] ? " = cursor mode key" : a_e.code == g_keyDik[kKeyToggle] ? " = show/hide key" :
+					a_e.code == g_keyDik[kKeySettings] && a_e.code ? " = settings key" : "");
+			}
 			if (!g_inputDisabled) {
 				SafeHandleInput(a_e);
 			}

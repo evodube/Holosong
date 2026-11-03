@@ -18,12 +18,12 @@ Spotify too. Spotify has to be open on the same PC.
 
 | Key | What it does |
 | --- | --- |
-| **F7** | Show / hide the widget |
-| **F6** | Cursor mode: a cursor to click, drag and resize the widget (Esc or F6 again puts it away) |
-| **F10** | Settings window (the cursor comes up with it; F10 again closes both) |
+| **Page Down** | Show / hide the widget |
+| **Page Up** | Cursor mode: a cursor to click, drag and resize the widget (Esc or Page Up again puts it away) |
+| *(none by default)* | Settings window: the gear on the widget, or the bar under it in cursor mode (a key can be set) |
 | **Ctrl + Z** | In cursor mode: undo the last move or resize |
 
-Every key can be changed in the settings (F10, or the gear on the widget) or in `Holosong.ini`. Optional
+Every key can be changed in the settings (the gear on the widget) or in `Holosong.ini`. Optional
 play/pause, next, previous and volume keys work without the cursor.
 
 - **While playing** (no cursor) the widget shows just the music: no settings/close buttons and no volume section,

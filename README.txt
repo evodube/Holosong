@@ -5,7 +5,7 @@ An in-game music widget for Fallout 4 (Old-gen 1.10.163, Next-gen 1.10.984, Anni
 It controls Spotify, YouTube Music in a browser, foobar2000, MusicBee and other players
 through Windows' own media controls.
 
-Keys: F7 show/hide, F6 cursor mode, F10 settings. Everything can be changed in the
+Keys: Page Down show/hide, Page Up cursor mode (the gear on the widget opens the settings). Everything can be changed in the
 settings window or in Data/F4SE/Plugins/Holosong.ini.
 
 
