@@ -529,10 +529,11 @@ namespace Widget
 		// on the heap and never freed: releasing it while the game shuts down would call into the game too late
 		auto*             g_inputLayer = new RE::BSTSmartPointer<RE::BSInputEnableLayer>();
 
-		// Three of the game's own ways, each one fenced on its own (one failing on some game build leaves the others):
+		// Two of the game's own ways, each one fenced on its own (one failing on some game build leaves the other):
 		//  1. an input layer with every control off (looking, firing, activating, moving, menus, VATS...)
-		//  2. the "cursor" input context, the one the game's own cursor menus switch to: the mouse stops being the camera
-		//  3. the player-input block the game uses during scenes
+		//  2. the player-input block the game uses during scenes
+		// (v0.1.5 also switched to the game's "cursor" input context: Esc - the game's own "cancel" - could switch it back
+		// itself, and switching back again then took the normal gameplay controls away. Not used any more.)
 		using UEF = RE::UserEvents::USER_EVENT_FLAG;
 		constexpr std::int32_t kAllControls = 0xFFF;  // every flag one by one (kMovement ... kVATS), not the -1 shortcut
 
@@ -551,23 +552,8 @@ namespace Widget
 			}
 		}
 
-		bool g_contextPushed = false;
-		void ContextRaw(bool a_off)
-		{
-			auto* cm = RE::ControlMap::GetSingleton();
-			if (!cm) {
-				return;
-			}
-			if (a_off && !g_contextPushed) {
-				cm->PushInputContext(RE::UserEvents::INPUT_CONTEXT_ID::kCursor);
-				g_contextPushed = true;
-			} else if (!a_off && g_contextPushed) {
-				cm->PopInputContext(RE::UserEvents::INPUT_CONTEXT_ID::kCursor);
-				g_contextPushed = false;
-			}
-		}
-
-		bool g_blockSet = false, g_blockWas = false;
+		bool              g_blockSet = false, g_blockWas = false;
+		std::atomic<bool> g_controlsOff{ false };
 		void BlockRaw(bool a_off)
 		{
 			auto* pc = RE::PlayerControls::GetSingleton();
@@ -602,15 +588,15 @@ namespace Widget
 		bool SafeSetGameControls(bool a_off)
 		{
 			const bool layer = SafeLock(0, LayerRaw, a_off, "GameControls.Layer");
-			const bool context = SafeLock(1, ContextRaw, a_off, "GameControls.Context");
 			const bool block = SafeLock(2, BlockRaw, a_off, "GameControls.Block");
-			spdlog::info("Game controls {}: input layer {}, cursor context {}, player input block {}", a_off ? "off (cursor mode)" : "back on",
-				layer ? "ok" : "failed", context ? "ok" : "failed", block ? "ok" : "failed");
-			return layer || context || block;
+			spdlog::info("Game controls {}: input layer {}, player input block {}", a_off ? "off (cursor mode)" : "back on", layer ? "ok" : "failed",
+				block ? "ok" : "failed");
+			return layer || block;
 		}
 
 		void SetGameControls(bool a_off)
 		{
+			g_controlsOff = a_off;
 			if (auto* t = F4SE::GetTaskInterface()) {
 				t->AddTask([a_off]() { SafeSetGameControls(a_off); });
 			}
@@ -2914,6 +2900,18 @@ namespace Widget
 		}
 
 		const Media::Snapshot m = Media::Get();
+
+		// Safety: with the cursor away, nothing of ours may stay locked (a lost task, a load in between...)
+		{
+			static float nextCheck = 0.0f;
+			if (!g_cursor && g_gameLoaded && g_time >= nextCheck) {
+				nextCheck = g_time + 2.0f;
+				if (g_blockSet || g_controlsOff) {
+					spdlog::warn("Game controls were still locked with the cursor away - unlocking");
+					SetGameControls(false);
+				}
+			}
+		}
 
 		// The game's music / radio: silent while the app plays (normal again in the pause menu, where the audio settings are)
 		{
