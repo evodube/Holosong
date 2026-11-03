@@ -369,7 +369,21 @@ namespace Input
 			return ::CallNextHookEx(nullptr, a_code, a_wp, a_lp);
 		}
 
-		HANDLE g_hooksReady = nullptr;
+		HANDLE           g_hooksReady = nullptr;
+		std::atomic<DWORD> g_hookThreadId{ 0 };
+		constexpr UINT   kMsgRehook = WM_APP + 1;
+
+		// Low-level hooks run newest first, and a hook that doesn't pass input on hides it from every hook installed
+		// before it (the game still gets it). Putting ours back on top makes it the newest again.
+		void HookKeyboard(HMODULE a_self, const char* a_why)
+		{
+			if (g_kbHook) {
+				::UnhookWindowsHookEx(g_kbHook);
+			}
+			g_kbHook = ::SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardProc, a_self, 0);
+			g_llKeys = g_kbHook != nullptr;
+			spdlog::info("Input: keyboard hook {} ({})", g_kbHook ? "put back in front" : std::format("FAILED ({})", ::GetLastError()), a_why);
+		}
 
 		DWORD WINAPI HookThread(LPVOID)
 		{
@@ -385,9 +399,14 @@ namespace Input
 			g_llMouse = g_msHook != nullptr;
 			spdlog::info("Input: low-level keyboard hook {}, mouse hook {}", g_kbHook ? "in place" : std::format("FAILED ({})", kbErr),
 				g_msHook ? "in place" : std::format("FAILED ({})", msErr));
+			g_hookThreadId = ::GetCurrentThreadId();
 			::SetEvent(g_hooksReady);
 			MSG msg;
 			while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
+				if (msg.message == kMsgRehook) {
+					HookKeyboard(self, msg.wParam == 1 ? "a save was loaded" : "no keys reached it");
+					continue;
+				}
 				::TranslateMessage(&msg);
 				::DispatchMessageW(&msg);
 			}
@@ -451,6 +470,12 @@ namespace Input
 	bool KeyboardSeen() { return g_keyboardSeen; }
 	bool MouseSeen() { return g_mouseSeen; }
 	bool LowLevelKeys() { return g_llKeys; }
+	void Rehook(bool a_saveLoaded)
+	{
+		if (const DWORD t = g_hookThreadId) {
+			::PostThreadMessageW(t, kMsgRehook, a_saveLoaded ? 1 : 0, 0);
+		}
+	}
 	bool LowLevelMouse() { return g_llMouse; }
 	bool LowLevelKeySeen() { return g_llKeySeen; }
 	bool LowLevelMouseSeen() { return g_llMouseSeen; }

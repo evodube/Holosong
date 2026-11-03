@@ -61,4 +61,6 @@ namespace Input
 	bool LowLevelMouse();
 	bool LowLevelKeySeen();  // ...and have seen input while the game was in front
 	bool LowLevelMouseSeen();
+	// Puts the keyboard hook back in front of any hook installed after it (one that doesn't pass keys on hides them)
+	void Rehook(bool a_saveLoaded);
 }

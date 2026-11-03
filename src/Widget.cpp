@@ -769,6 +769,55 @@ namespace Widget
 			}
 		}
 
+		// ---- last resort for the keys: Windows' key state, read every frame
+		// If something in front of our keyboard hook keeps the keys from it, the key state still changes (the game gets
+		// the keys). Read only while Fallout 4 is in front, and only until the hook gets keys of its own. It can't keep
+		// the keys from the game, but the hotkeys, the settings window and typing all work.
+		bool  g_polledDown[256]{};
+		bool  g_pollingUsed = false;
+		float g_rehookAt = -100.0f;
+		int   g_rehooks = 0;
+
+		bool GameWindowInFront()
+		{
+			HWND  w = ::GetForegroundWindow();
+			DWORD pid = 0;
+			::GetWindowThreadProcessId(w, &pid);
+			return w && pid == ::GetCurrentProcessId();
+		}
+
+		void PollKeys()
+		{
+			const bool front = GameWindowInFront();
+			for (int vk = 0x08; vk < 0xFF; ++vk) {
+				if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || (vk >= VK_LBUTTON && vk <= VK_XBUTTON2)) {
+					continue;  // the left/right versions are read instead; mouse buttons come from the mouse hook
+				}
+				const bool down = front && (::GetAsyncKeyState(vk) & 0x8000) != 0;
+				if (down == g_polledDown[vk]) {
+					continue;
+				}
+				g_polledDown[vk] = down;
+				if (Input::LowLevelKeySeen() || !g_gameLoaded) {
+					continue;  // the hook has the keys (or it's too early): just keep track
+				}
+				const std::uint32_t dik = VirtualKeyToDIK(vk);
+				if (!dik) {
+					continue;
+				}
+				if (down && g_time - g_rehookAt > 15.0f && g_rehooks < 4) {  // first try putting the hook back in front
+					g_rehookAt = g_time;
+					++g_rehooks;
+					Input::Rehook(false);
+				}
+				if (!g_pollingUsed) {
+					g_pollingUsed = true;
+					spdlog::warn("Keys: the keyboard hook gets no keys (something in front of it keeps them) - reading the key state instead");
+				}
+				OnInputEvent({ Input::Kind::Key, dik, down });
+			}
+		}
+
 		// Ctrl + wheel over the widget: its scale
 		bool  g_wheelScale = false;
 		float g_wheelFrame = 0.0f;  // wheel ticks this frame (+ up / - down), used by the settings panel and the volume slider
@@ -2662,6 +2711,7 @@ namespace Widget
 	void OnGameLoaded()
 	{
 		g_gameLoaded = true;
+		Input::Rehook(true);  // after every mod has set up its own hooks: ours in front
 		spdlog::info("Game loaded. Low-level hooks: keyboard {} ({}), mouse {} ({}). DirectInput: keyboard {}, mouse {}",
 			Input::LowLevelKeys() ? "on" : "off", Input::LowLevelKeySeen() ? "keys seen" : "no keys yet", Input::LowLevelMouse() ? "on" : "off",
 			Input::LowLevelMouseSeen() ? "mouse seen" : "no mouse yet", Input::KeyboardSeen() ? "seen" : "not seen", Input::MouseSeen() ? "seen" : "not seen");
@@ -2699,6 +2749,8 @@ namespace Widget
 		if (a_sc != g_sc) {
 			return;
 		}
+
+		PollKeys();
 
 		const auto now = std::chrono::steady_clock::now();
 		struct CostTimer  // how long this call takes, for the frame-rate readout
