@@ -1,0 +1,217 @@
+[0mchecking for platform ... [32;1mwindows (x64)[0m
+[0m[33;1mDetecting Visual Studio environment (cached); run `xmake global --clean` first if vs updated.[0m
+[0mchecking for vswhere.exe ... [32;1mC:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe[0m
+[0mchecking for cl.exe ... [32;1mC:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\cl.exe[0m
+[0mchecking for Microsoft C/C++ Compiler (x64) ... [32;1mok[0m
+[0mchecking for Microsoft Visual Studio (x64) version ... [32;1m2022[0m
+[0mchecking for zig ... [31;1mno[0m
+[0mchecking for nim ... [31;1mno[0m
+[0mchecking for dotnet ... [32;1mC:\Program Files\dotnet\dotnet.exe[0m
+[0mchecking for .NET SDK version ... [32;1m10.0.403[0m
+[0mchecking for .NET SDK directory ... [32;1mC:\Program Files\dotnet\sdk\10.0.403[0m
+[0mchecking for git ... [32;1mC:\Program Files\Git\bin\git.exe[0m
+[0mchecking for gzip ... [32;1mC:\Program Files\Git\usr\bin\gzip.exe[0m
+[0mchecking for tar ... [32;1mC:\Windows\System32\tar.exe[0m
+[0mchecking for curl ... [32;1mD:\a\Holosong\Holosong\.xmake-cache\winenv\bin\curl[0m
+pinging the host(gitlab.com) ... 25 ms
+pinging the host(github.com) ... 43 ms
+updating repositories .. 
+cloning repository(build-artifacts): https://gitlab.com/xmake-mirror/build-artifacts.git to C:\Users\runneradmin\AppData\Local\.xmake\repositories\build-artifacts ..
+Cloning into 'C:\Users\runneradmin\AppData\Local\.xmake\repositories\build-artifacts'...
+Updating files:  26% (644/2442)
+Updating files:  27% (660/2442)
+Updating files:  28% (684/2442)
+Updating files:  29% (709/2442)
+Updating files:  30% (733/2442)
+Updating files:  31% (758/2442)
+Updating files:  32% (782/2442)
+Updating files:  33% (806/2442)
+Updating files:  34% (831/2442)
+Updating files:  35% (855/2442)
+Updating files:  36% (880/2442)
+Updating files:  37% (904/2442)
+Updating files:  38% (928/2442)
+Updating files:  38% (929/2442)
+Updating files:  39% (953/2442)
+Updating files:  40% (977/2442)
+Updating files:  41% (1002/2442)
+Updating files:  42% (1026/2442)
+Updating files:  43% (1051/2442)
+Updating files:  44% (1075/2442)
+Updating files:  45% (1099/2442)
+Updating files:  46% (1124/2442)
+Updating files:  47% (1148/2442)
+Updating files:  48% (1173/2442)
+Updating files:  49% (1197/2442)
+Updating files:  50% (1221/2442)
+Updating files:  51% (1246/2442)
+Updating files:  52% (1270/2442)
+Updating files:  53% (1295/2442)
+Updating files:  54% (1319/2442)
+Updating files:  55% (1344/2442)
+Updating files:  56% (1368/2442)
+Updating files:  57% (1392/2442)
+Updating files:  58% (1417/2442)
+Updating files:  59% (1441/2442)
+Updating files:  60% (1466/2442)
+Updating files:  61% (1490/2442)
+Updating files:  62% (1515/2442)
+Updating files:  63% (1539/2442)
+Updating files:  64% (1563/2442)
+Updating files:  65% (1588/2442)
+Updating files:  66% (1612/2442)
+Updating files:  67% (1637/2442)
+Updating files:  68% (1661/2442)
+Updating files:  69% (1685/2442)
+Updating files:  69% (1691/2442)
+Updating files:  70% (1710/2442)
+Updating files:  71% (1734/2442)
+Updating files:  72% (1759/2442)
+Updating files:  73% (1783/2442)
+Updating files:  74% (1808/2442)
+Updating files:  75% (1832/2442)
+Updating files:  76% (1856/2442)
+Updating files:  77% (1881/2442)
+Updating files:  78% (1905/2442)
+Updating files:  79% (1930/2442)
+Updating files:  80% (1954/2442)
+Updating files:  81% (1979/2442)
+Updating files:  82% (2003/2442)
+Updating files:  83% (2027/2442)
+Updating files:  83% (2038/2442)
+Updating files:  84% (2052/2442)
+Updating files:  85% (2076/2442)
+Updating files:  86% (2101/2442)
+Updating files:  87% (2125/2442)
+Updating files:  88% (2149/2442)
+Updating files:  89% (2174/2442)
+Updating files:  90% (2198/2442)
+Updating files:  91% (2223/2442)
+Updating files:  92% (2247/2442)
+Updating files:  93% (2272/2442)
+Updating files:  94% (2296/2442)
+Updating files:  95% (2320/2442)
+Updating files:  96% (2345/2442)
+Updating files:  97% (2369/2442)
+Updating files:  98% (2394/2442)
+Updating files:  99% (2418/2442)
+Updating files: 100% (2442/2442)
+Updating files: 100% (2442/2442), done.
+cloning repository(xmake-repo): https://gitlab.com/tboox/xmake-repo.git to C:\Users\runneradmin\AppData\Local\.xmake\repositories\xmake-repo ..
+Cloning into 'C:\Users\runneradmin\AppData\Local\.xmake\repositories\xmake-repo'...
+Updating files:  27% (822/2943)
+Updating files:  28% (825/2943)
+Updating files:  29% (854/2943)
+Updating files:  30% (883/2943)
+Updating files:  31% (913/2943)
+Updating files:  32% (942/2943)
+Updating files:  33% (972/2943)
+Updating files:  34% (1001/2943)
+Updating files:  35% (1031/2943)
+Updating files:  36% (1060/2943)
+Updating files:  37% (1089/2943)
+Updating files:  38% (1119/2943)
+Updating files:  39% (1148/2943)
+Updating files:  40% (1178/2943)
+Updating files:  41% (1207/2943)
+Updating files:  42% (1237/2943)
+Updating files:  43% (1266/2943)
+Updating files:  44% (1295/2943)
+Updating files:  45% (1325/2943)
+Updating files:  46% (1354/2943)
+Updating files:  47% (1384/2943)
+Updating files:  48% (1413/2943)
+Updating files:  49% (1443/2943)
+Updating files:  50% (1472/2943)
+Updating files:  51% (1501/2943)
+Updating files:  52% (1531/2943)
+Updating files:  53% (1560/2943)
+Updating files:  54% (1590/2943)
+Updating files:  55% (1619/2943)
+Updating files:  56% (1649/2943)
+Updating files:  57% (1678/2943)
+Updating files:  58% (1707/2943)
+Updating files:  59% (1737/2943)
+Updating files:  60% (1766/2943)
+Updating files:  61% (1796/2943)
+Updating files:  62% (1825/2943)
+Updating files:  63% (1855/2943)
+Updating files:  64% (1884/2943)
+Updating files:  65% (1913/2943)
+Updating files:  66% (1943/2943)
+Updating files:  67% (1972/2943)
+Updating files:  68% (2002/2943)
+Updating files:  69% (2031/2943)
+Updating files:  69% (2042/2943)
+Updating files:  70% (2061/2943)
+Updating files:  71% (2090/2943)
+Updating files:  72% (2119/2943)
+Updating files:  73% (2149/2943)
+Updating files:  74% (2178/2943)
+Updating files:  75% (2208/2943)
+Updating files:  76% (2237/2943)
+Updating files:  77% (2267/2943)
+Updating files:  78% (2296/2943)
+Updating files:  79% (2325/2943)
+Updating files:  80% (2355/2943)
+Updating files:  81% (2384/2943)
+Updating files:  82% (2414/2943)
+Updating files:  83% (2443/2943)
+Updating files:  84% (2473/2943)
+Updating files:  85% (2502/2943)
+Updating files:  86% (2531/2943)
+Updating files:  87% (2561/2943)
+Updating files:  88% (2590/2943)
+Updating files:  89% (2620/2943)
+Updating files:  90% (2649/2943)
+Updating files:  91% (2679/2943)
+Updating files:  92% (2708/2943)
+Updating files:  93% (2737/2943)
+Updating files:  94% (2767/2943)
+Updating files:  95% (2796/2943)
+Updating files:  96% (2826/2943)
+Updating files:  97% (2855/2943)
+Updating files:  98% (2885/2943)
+Updating files:  99% (2914/2943)
+Updating files: 100% (2943/2943)
+Updating files: 100% (2943/2943), done.
+[0m[32mok[0m
+C:\Program Files\Git\bin\git.exe rev-parse HEAD
+[0mchecking for ninja ... [31;1mno[0m
+[0mchecking for ninja ... [31;1mno[0m
+[0mchecking for ninja ... [32;1mC:\ProgramData\Chocolatey\bin\ninja.exe[0m
+[0mchecking for cmake ... [31;1mno[0m
+[0mchecking for cmake ... [31;1mno[0m
+[0mchecking for cmake ... [32;1mC:\Program Files\CMake\bin\cmake[0m
+[0mchecking for xmake::spdlog ... [32;1mspdlog v1.16.0[0m
+[0mchecking for xmake::imgui ... [32;1mimgui v1.90[0m
+[0mchecking for xmake::stb ... [32;1mstb 2024.06.01[0m
+[0mchecking for cl.exe ... [32;1mC:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\cl.exe[0m
+[0m[2mchecking for the c++ compiler (cxx) ... [32;1mcl.exe[0m
+[0mchecking for link.exe ... [32;1mC:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\link.exe[0m
+[0m[2mchecking for the linker (ld) ... [32;1mlink.exe[0m
+[0mchecking for cl.exe ... [32;1mC:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\cl.exe[0m
+[0m[2mchecking for the c compiler (cc) ... [32;1mcl.exe[0m
+[0m[2mgenerating D:\a\Holosong\Holosong\res\commonlibf4-plugin.cpp.in to build\.gens\Holosong\windows\x64\releasedbg\commonlibf4-plugin.cpp ..[0m
+[0mgenerating D:\a\Holosong\Holosong\res\commonlibf4-plugin.cpp.in ... [32;1mok[0m
+[0m[2mgenerating D:\a\Holosong\Holosong\lib\commonlibf4\lib\commonlib-shared\res\commonlib-plugin.rc.in to build\.gens\Holosong\windows\x64\releasedbg\commonlib-plugin.rc ..[0m
+[0mgenerating D:\a\Holosong\Holosong\lib\commonlibf4\lib\commonlib-shared\res\commonlib-plugin.rc.in ... [32;1mok[0m
+configure
+{
+    vs = 2022
+    ccache = true
+    commonlib_toml = false
+    host = windows
+    kind = static
+    commonlib_random = false
+    commonlib_ini = false
+    builddir = build
+    commonlib_json = false
+    mode = releasedbg
+    commonlib_xbyak = false
+    arch = x64
+    dotnet = C:\Program Files\dotnet\sdk\10.0.403
+    dotnet_sdkver = 10.0.403
+    plat = windows
+    ndk_stdcxx = true
+}
