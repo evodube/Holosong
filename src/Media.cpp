@@ -505,7 +505,9 @@ namespace Media
 			}
 			spdlog::info("Windows media controls ready");
 
-			std::string lastTrack, lastApp;
+			std::string lastTrack, lastApp, artKey;
+			int         artTries = 0;
+			auto        artRetryAt = std::chrono::steady_clock::time_point{};
 			bool        lastHad = false;
 			auto        nextProps = std::chrono::steady_clock::time_point{};
 			auto        nextVolume = std::chrono::steady_clock::time_point{};
@@ -617,8 +619,13 @@ namespace Media
 							snap.artist = winrt::to_string(props.Artist());
 							snap.album = winrt::to_string(props.AlbumTitle());
 							const std::string key = snap.app + "|" + snap.title + "|" + snap.artist + "|" + snap.album;
-							if (key != lastTrack) {
+							if (key != artKey) {  // a new song: its cover gets a few tries
+								artKey = key;
+								artTries = 0;
+							}
+							if (key != lastTrack && artTries < 5 && now >= artRetryAt) {
 								lastTrack = key;
+								++artTries;
 								std::vector<std::uint8_t> px;
 								int                       w = 0, h = 0;
 								bool                      ok = false;
@@ -627,6 +634,10 @@ namespace Media
 									ok = ReadArt(props.Thumbnail(), Lower(snap.app).find("spotify") != std::string::npos, px, w, h);
 								} catch (...) {
 									ok = false;
+								}
+								if (!ok) {  // try the cover again in a few seconds (the player can be slow to hand it over)
+									lastTrack.clear();
+									artRetryAt = now + std::chrono::seconds(6);
 								}
 								std::lock_guard lk(S.mtx);
 								S.art = ok ? std::move(px) : std::vector<std::uint8_t>{};

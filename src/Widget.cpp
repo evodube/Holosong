@@ -119,9 +119,32 @@ namespace Widget
 			if (a_vk <= 0) {
 				return 0;
 			}
-			const UINT sc = ::MapVirtualKeyW(static_cast<UINT>(a_vk), MAPVK_VK_TO_VSC_EX);
+			UINT sc = ::MapVirtualKeyW(static_cast<UINT>(a_vk), MAPVK_VK_TO_VSC_EX);
 			if (sc == 0) {
 				return 0;
+			}
+			// keys Windows doesn't always mark as extended (seen: Page Up came out as Num 9)
+			switch (a_vk) {
+			case VK_PRIOR:
+			case VK_NEXT:
+			case VK_END:
+			case VK_HOME:
+			case VK_INSERT:
+			case VK_DELETE:
+			case VK_LEFT:
+			case VK_RIGHT:
+			case VK_UP:
+			case VK_DOWN:
+			case VK_RCONTROL:
+			case VK_RMENU:
+			case VK_DIVIDE:
+			case VK_LWIN:
+			case VK_RWIN:
+			case VK_APPS:
+				sc |= 0xE000;
+				break;
+			default:
+				break;
 			}
 			if ((sc & 0xFF00) == 0xE000 || (sc & 0xFF00) == 0xE100) {
 				return (sc & 0x7F) | 0x80;  // extended keys: DirectInput sets the high bit

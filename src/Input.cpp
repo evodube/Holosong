@@ -38,6 +38,8 @@
 #include <spdlog/spdlog.h>
 
 #include <atomic>
+#include <condition_variable>
+#include <deque>
 #include <format>
 #include <cstring>
 #include <mutex>
@@ -112,6 +114,39 @@ namespace Input
 		{
 			if (auto cb = g_callback.load()) {
 				cb(a_e);
+			}
+		}
+
+		// The low-level hooks must answer Windows within a fraction of a second, or Windows quietly drops them (seen: the
+		// keyboard hook stopped getting keys while the mouse one kept working). So they only queue the event; a thread
+		// of ours hands it to the widget, which may then take its time (the game can be busy during a load).
+		std::mutex              g_qMtx;
+		std::condition_variable g_qCv;
+		std::deque<Event>       g_queue;
+
+		void Queue(const Event& a_e)
+		{
+			{
+				std::lock_guard lk(g_qMtx);
+				if (g_queue.size() < 4096) {
+					g_queue.push_back(a_e);
+				}
+			}
+			g_qCv.notify_one();
+		}
+
+		DWORD WINAPI DeliverThread(LPVOID)
+		{
+			for (;;) {
+				std::deque<Event> batch;
+				{
+					std::unique_lock lk(g_qMtx);
+					g_qCv.wait(lk, [] { return !g_queue.empty(); });
+					batch.swap(g_queue);
+				}
+				for (const auto& e : batch) {
+					Emit(e);
+				}
 			}
 		}
 
@@ -304,7 +339,7 @@ namespace Input
 				const bool was = g_llDown[dik];
 				g_llDown[dik] = !up;
 				if (up || !was) {
-					Emit({ Kind::Key, dik, !up });
+					Queue({ Kind::Key, dik, !up });
 				}
 				if (g_block && !up) {
 					return 1;  // cursor mode: the game doesn't get the press (releases go through)
@@ -327,7 +362,7 @@ namespace Input
 						::GetCursorPos(&cur);
 						const float dx = static_cast<float>(m->pt.x - cur.x), dy = static_cast<float>(m->pt.y - cur.y);
 						if (dx != 0.0f || dy != 0.0f) {
-							Emit({ Kind::MouseMove, 0, false, dx, dy });
+							Queue({ Kind::MouseMove, 0, false, dx, dy });
 						}
 						return 1;
 					}
@@ -350,14 +385,14 @@ namespace Input
 						} else if (a_wp == WM_XBUTTONDOWN || a_wp == WM_XBUTTONUP) {
 							b = HIWORD(m->mouseData) == XBUTTON2 ? 4 : 3;
 						}
-						Emit({ Kind::MouseButton, b, down });
+						Queue({ Kind::MouseButton, b, down });
 						if (block && down) {
 							return 1;
 						}
 						break;
 					}
 				case WM_MOUSEWHEEL:
-					Emit({ Kind::Wheel, 0, false, 0.0f, static_cast<float>(static_cast<short>(HIWORD(m->mouseData))) / WHEEL_DELTA });
+					Queue({ Kind::Wheel, 0, false, 0.0f, static_cast<float>(static_cast<short>(HIWORD(m->mouseData))) / WHEEL_DELTA });
 					if (block) {
 						return 1;
 					}
@@ -421,6 +456,9 @@ namespace Input
 
 		bool StartLowLevelHooks()
 		{
+			if (HANDLE d = ::CreateThread(nullptr, 0, DeliverThread, nullptr, 0, nullptr)) {
+				::CloseHandle(d);
+			}
 			g_hooksReady = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
 			HANDLE t = ::CreateThread(nullptr, 0, HookThread, nullptr, 0, nullptr);
 			if (!t) {
