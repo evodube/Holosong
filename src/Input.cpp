@@ -375,14 +375,20 @@ namespace Input
 
 		// Low-level hooks run newest first, and a hook that doesn't pass input on hides it from every hook installed
 		// before it (the game still gets it). Putting ours back on top makes it the newest again.
-		void HookKeyboard(HMODULE a_self, const char* a_why)
+		// A hook in front of ours can also ignore our "hold this back" and let the click through: in front, ours is final.
+		void HookAgain(HMODULE a_self, const char* a_why)
 		{
 			if (g_kbHook) {
 				::UnhookWindowsHookEx(g_kbHook);
 			}
 			g_kbHook = ::SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardProc, a_self, 0);
 			g_llKeys = g_kbHook != nullptr;
-			spdlog::info("Input: keyboard hook {} ({})", g_kbHook ? "put back in front" : std::format("FAILED ({})", ::GetLastError()), a_why);
+			if (g_msHook) {
+				::UnhookWindowsHookEx(g_msHook);
+			}
+			g_msHook = ::SetWindowsHookExW(WH_MOUSE_LL, MouseProc, a_self, 0);
+			g_llMouse = g_msHook != nullptr;
+			spdlog::info("Input: hooks put back in front ({}): keyboard {}, mouse {}", a_why, g_kbHook ? "ok" : "FAILED", g_msHook ? "ok" : "FAILED");
 		}
 
 		DWORD WINAPI HookThread(LPVOID)
@@ -404,7 +410,7 @@ namespace Input
 			MSG msg;
 			while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
 				if (msg.message == kMsgRehook) {
-					HookKeyboard(self, msg.wParam == 1 ? "a save was loaded" : "no keys reached it");
+					HookAgain(self, msg.wParam == 1 ? "a save was loaded" : msg.wParam == 2 ? "cursor mode" : "no keys reached it");
 					continue;
 				}
 				::TranslateMessage(&msg);
@@ -470,10 +476,10 @@ namespace Input
 	bool KeyboardSeen() { return g_keyboardSeen; }
 	bool MouseSeen() { return g_mouseSeen; }
 	bool LowLevelKeys() { return g_llKeys; }
-	void Rehook(bool a_saveLoaded)
+	void Rehook(int a_reason)
 	{
 		if (const DWORD t = g_hookThreadId) {
-			::PostThreadMessageW(t, kMsgRehook, a_saveLoaded ? 1 : 0, 0);
+			::PostThreadMessageW(t, kMsgRehook, static_cast<WPARAM>(a_reason), 0);
 		}
 	}
 	bool LowLevelMouse() { return g_llMouse; }

@@ -501,6 +501,54 @@ namespace Widget
 			}
 		}
 
+		// ---- the game's own controls: off in cursor mode (an input layer, the way the game's menus do it)
+		// This is the wall no other hook or mod can open: even a click that gets past every hook does nothing in the game.
+		// on the heap and never freed: releasing it while the game shuts down would call into the game too late
+		auto*             g_inputLayer = new RE::BSTSmartPointer<RE::BSInputEnableLayer>();
+		std::atomic<bool> g_layerBroken{ false };
+
+		void SetGameControlsRaw(bool a_off)
+		{
+			auto* mgr = RE::BSInputEnableManager::GetSingleton();
+			if (!mgr) {
+				return;
+			}
+			auto& layer = *g_inputLayer;
+			if (!layer && !mgr->AllocateNewLayer(layer, "Holosong")) {
+				return;
+			}
+			if (!layer) {
+				return;
+			}
+			// everything: looking, firing, activating, menus (Pip-Boy, pause), moving, jumping, VATS...
+			mgr->EnableUserEvent(layer->layerID, RE::UserEvents::USER_EVENT_FLAG::kAll, !a_off, RE::UserEvents::SENDER_ID::kMenu);
+		}
+
+		bool SafeSetGameControls(bool a_off)  // no C++ objects here: __try needs that
+		{
+			if (g_layerBroken) {
+				return false;
+			}
+			__try {
+				SetGameControlsRaw(a_off);
+				return true;
+			} __except (SehFilter(GetExceptionInformation(), "GameControls")) {
+				g_layerBroken = true;
+				return false;
+			}
+		}
+
+		void SetGameControls(bool a_off)
+		{
+			if (auto* t = F4SE::GetTaskInterface()) {
+				t->AddTask([a_off]() {
+					if (SafeSetGameControls(a_off)) {
+						spdlog::info("Game controls {}", a_off ? "off (cursor mode)" : "back on");
+					}
+				});
+			}
+		}
+
 		// ================================================================ cursor mode
 		void ApplyCursor(bool a_on)
 		{
@@ -511,6 +559,12 @@ namespace Widget
 			g_wantCursor = a_on;
 			// The game (and every mod reading input through it) gets no presses, clicks or mouse movement - only releases
 			Input::SetBlocking(a_on && dbg.blockInput);
+			if (dbg.blockInput) {
+				if (a_on) {
+					Input::Rehook(2);  // ours in front, so holding input back is final
+				}
+				SetGameControls(a_on);
+			}
 			if (g_imguiReady) {
 				ImGui::GetIO().MouseDrawCursor = a_on;
 			}
@@ -808,7 +862,7 @@ namespace Widget
 				if (down && g_time - g_rehookAt > 15.0f && g_rehooks < 4) {  // first try putting the hook back in front
 					g_rehookAt = g_time;
 					++g_rehooks;
-					Input::Rehook(false);
+					Input::Rehook(0);
 				}
 				if (!g_pollingUsed) {
 					g_pollingUsed = true;
@@ -2711,7 +2765,7 @@ namespace Widget
 	void OnGameLoaded()
 	{
 		g_gameLoaded = true;
-		Input::Rehook(true);  // after every mod has set up its own hooks: ours in front
+		Input::Rehook(1);  // after every mod has set up its own hooks: ours in front
 		spdlog::info("Game loaded. Low-level hooks: keyboard {} ({}), mouse {} ({}). DirectInput: keyboard {}, mouse {}",
 			Input::LowLevelKeys() ? "on" : "off", Input::LowLevelKeySeen() ? "keys seen" : "no keys yet", Input::LowLevelMouse() ? "on" : "off",
 			Input::LowLevelMouseSeen() ? "mouse seen" : "no mouse yet", Input::KeyboardSeen() ? "seen" : "not seen", Input::MouseSeen() ? "seen" : "not seen");

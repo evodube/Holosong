@@ -61,6 +61,7 @@ namespace Input
 	bool LowLevelMouse();
 	bool LowLevelKeySeen();  // ...and have seen input while the game was in front
 	bool LowLevelMouseSeen();
-	// Puts the keyboard hook back in front of any hook installed after it (one that doesn't pass keys on hides them)
-	void Rehook(bool a_saveLoaded);
+	// Puts both hooks back in front of any installed after them (one that doesn't pass input on hides it from ours, and
+	// one that ignores our "hold it back" lets it through). a_reason: 0 no keys arrived, 1 save loaded, 2 cursor mode.
+	void Rehook(int a_reason);
 }
