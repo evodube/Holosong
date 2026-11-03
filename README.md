@@ -14,6 +14,9 @@ Spotify too. Spotify has to be open on the same PC.
 - Windows 10 version 1809 or newer, or Windows 11
 - The Spotify desktop app (other players work too, see `sMusicApp`)
 
+`Holosong/HolosongCover.exe` is a small helper: when Fallout 4's process can't get the album cover from Windows'
+media controls (the transfer stalls inside the game), Holosong runs it hidden to fetch the cover outside the game.
+
 ## Using it
 
 | Key | What it does |

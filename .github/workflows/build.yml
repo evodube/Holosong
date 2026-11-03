@@ -73,6 +73,7 @@ jobs:
           $plugins = "$out/Data/F4SE/Plugins"
           New-Item -ItemType Directory -Force -Path "$plugins/Holosong/Fonts" | Out-Null
           Copy-Item build/out/F4SE/Plugins/Holosong.dll "$plugins/"
+          Copy-Item build/out/F4SE/Plugins/Holosong/HolosongCover.exe "$plugins/Holosong/"
           Copy-Item Holosong.ini "$plugins/"
           Copy-Item assets/fonts/* "$plugins/Holosong/Fonts/"
           foreach ($f in "LICENSE.txt","EXCEPTIONS.txt","THIRD-PARTY-NOTICES.txt","README.txt") { Copy-Item $f "$plugins/Holosong/" }

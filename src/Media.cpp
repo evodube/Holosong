@@ -381,7 +381,7 @@ namespace Media
 			} catch (...) {
 			}
 			try {
-				const ULONGLONG deadline = ::GetTickCount64() + 10000;
+				const ULONGLONG deadline = ::GetTickCount64() + 4000;  // a quick first try (the helper takes over if it stalls)
 				auto            open = a_ref.OpenReadAsync();
 				const int       o = PollDone(open, deadline);
 				if (o == 0) {
@@ -466,21 +466,125 @@ namespace Media
 			return job->result;
 		}
 
-		bool ReadArt(const wss::IRandomAccessStreamReference& a_ref, bool a_spotify, std::vector<std::uint8_t>& a_rgba, int& a_w, int& a_h)
+		// ---- the helper: HolosongCover.exe (next to the DLL, in Data\F4SE\Plugins\Holosong)
+		// Inside Fallout 4's process the cover transfer can stall for good (seen: the song details arrive, the picture
+		// never does). The helper is a small program of its own, outside the game, where nothing loaded into the game can
+		// get in the way: it fetches the current song's cover from Windows' media controls and writes it to a file.
+		std::atomic<bool> g_useHelper{ false };  // the in-game way stalled once: the helper from then on
+
+		std::wstring HelperExe()
 		{
-			if (!a_ref) {
-				spdlog::info("Album art: the player gives no picture for this song");
-				return false;
+			HMODULE self = nullptr;
+			wchar_t path[MAX_PATH]{};
+			if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&HelperExe), &self) ||
+				!::GetModuleFileNameW(self, path, MAX_PATH)) {
+				return {};
 			}
+			std::wstring p(path);
+			const auto   slash = p.find_last_of(L"\\/");
+			return (slash == std::wstring::npos ? std::wstring() : p.substr(0, slash + 1)) + L"Holosong\\HolosongCover.exe";
+		}
+
+		Fetch FetchViaHelper(const std::string& a_app, std::vector<std::uint8_t>& a_out)
+		{
+			static const std::wstring exe = HelperExe();
+			if (exe.empty() || ::GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) {
+				static bool told = false;
+				if (!told) {
+					told = true;
+					spdlog::error("Album art: HolosongCover.exe is missing (Data\\F4SE\\Plugins\\Holosong) - reinstall Holosong");
+				}
+				return Fetch::Error;
+			}
+			wchar_t tmp[MAX_PATH]{};
+			::GetTempPathW(MAX_PATH, tmp);
+			std::wstring dir = std::wstring(tmp) + L"Holosong";
+			::CreateDirectoryW(dir.c_str(), nullptr);
+			const std::wstring out = dir + L"\\cover.bin";
+			::DeleteFileW(out.c_str());
+			std::wstring cmd = L"\"" + exe + L"\" \"" + std::wstring(winrt::to_hstring(a_app)) + L"\" \"" + out + L"\"";
+			STARTUPINFOW        si{};
+			PROCESS_INFORMATION pi{};
+			si.cb = sizeof si;
+			if (!::CreateProcessW(exe.c_str(), cmd.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr, nullptr, &si, &pi)) {
+				spdlog::warn("Album art: couldn't start HolosongCover.exe ({})", ::GetLastError());
+				return Fetch::Error;
+			}
+			Fetch      r = Fetch::Error;
+			const auto w = ::WaitForSingleObject(pi.hProcess, 10000);
+			DWORD      code = 4;
+			if (w != WAIT_OBJECT_0) {
+				::TerminateProcess(pi.hProcess, 5);
+				r = Fetch::Timeout;
+			} else {
+				::GetExitCodeProcess(pi.hProcess, &code);
+			}
+			::CloseHandle(pi.hThread);
+			::CloseHandle(pi.hProcess);
+			if (r == Fetch::Timeout) {
+				return r;
+			}
+			switch (code) {
+			case 0:
+				{
+					HANDLE f = ::CreateFileW(out.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+					if (f == INVALID_HANDLE_VALUE) {
+						return Fetch::Error;
+					}
+					LARGE_INTEGER size{};
+					::GetFileSizeEx(f, &size);
+					a_out.resize(static_cast<std::size_t>((std::min)(size.QuadPart, static_cast<LONGLONG>(16 << 20))));
+					DWORD got = 0;
+					const bool ok = ::ReadFile(f, a_out.data(), static_cast<DWORD>(a_out.size()), &got, nullptr) != FALSE;
+					::CloseHandle(f);
+					a_out.resize(ok ? got : 0);
+					return a_out.empty() ? Fetch::Empty : Fetch::Ok;
+				}
+			case 2:
+				spdlog::info("Album art: the helper didn't find {} in Windows' media controls", a_app);
+				return Fetch::Error;
+			case 3:
+				return Fetch::Empty;
+			default:
+				spdlog::warn("Album art: the helper failed (exit code {})", code);
+				return Fetch::Error;
+			}
+		}
+
+		bool ReadArt(const wss::IRandomAccessStreamReference& a_ref, const std::string& a_app, bool a_spotify, std::vector<std::uint8_t>& a_rgba, int& a_w, int& a_h)
+		{
 			std::vector<std::uint8_t> bytes;
-			switch (FetchArtBytes(a_ref, bytes)) {
+			Fetch                     f = Fetch::Error;
+			if (!g_useHelper) {
+				if (!a_ref) {
+					spdlog::info("Album art: the player gives no picture for this song");
+					return false;
+				}
+				f = FetchArtBytes(a_ref, bytes);
+				if (f == Fetch::Timeout || f == Fetch::Busy || f == Fetch::Error) {
+					g_useHelper = true;
+					spdlog::info("Album art: the transfer stalls inside the game - fetching covers with HolosongCover.exe from now on");
+				}
+			}
+			if (g_useHelper) {
+				bytes.clear();
+				f = FetchViaHelper(a_app, bytes);
+				if (f == Fetch::Ok) {
+					static bool told = false;
+					if (!told) {
+						told = true;
+						spdlog::info("Album art: HolosongCover.exe got the cover ({} bytes)", bytes.size());
+					}
+				}
+			}
+			switch (f) {
 			case Fetch::Ok:
 				break;
 			case Fetch::Empty:
 				spdlog::info("Album art: the player's picture for this song is empty");
 				return false;
 			case Fetch::Timeout:
-				spdlog::warn("Album art: the player didn't hand the picture over within 10 seconds");
+				spdlog::warn("Album art: no picture within 10 seconds");
 				return false;
 			case Fetch::Busy:
 				spdlog::warn("Album art: earlier tries are still waiting on the player - not starting another");
@@ -790,7 +894,7 @@ namespace Media
 								bool                      ok = false;
 								Step("reading the album art");
 								try {
-									ok = ReadArt(props.Thumbnail(), Lower(snap.app).find("spotify") != std::string::npos, px, w, h);
+									ok = ReadArt(props.Thumbnail(), snap.app, Lower(snap.app).find("spotify") != std::string::npos, px, w, h);
 								} catch (...) {
 									ok = false;
 								}

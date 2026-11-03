@@ -51,6 +51,21 @@ target("HolosongWin", function()
     set_optimize("fastest")
 end)
 
+-- HolosongCover.exe: fetches the album cover outside the game's process (see src/CoverHelper.cpp)
+target("HolosongCover", function()
+    set_kind("binary")
+    set_default(false)
+    add_files("src/CoverHelper.cpp")
+    add_defines("NOMINMAX", "WIN32_LEAN_AND_MEAN", "UNICODE", "_UNICODE", "_WIN32_WINNT=0x0A00", "WINVER=0x0A00")
+    add_cxxflags(common_cxxflags)
+    add_ldflags("/SUBSYSTEM:WINDOWS", { force = true })
+    add_syslinks("windowsapp", "shell32", "user32", "kernel32", "ole32")
+    set_runtimes("MD")
+    set_optimize("fastest")
+    set_symbols("hidden")
+    set_targetdir("build/out/F4SE/Plugins/Holosong")
+end)
+
 target("Holosong", function()
     add_rules("commonlibf4.plugin", {
         name = "Holosong",
@@ -62,7 +77,7 @@ target("Holosong", function()
     -- don't run `xmake install` after every build (CI has no game folder)
     set_values("commonlib.plugin.install", false)
 
-    add_deps("HolosongWin")
+    add_deps("HolosongWin", "HolosongCover")
     add_packages("imgui")
 
     add_files("src/main.cpp", "src/Widget.cpp", "src/Theme.cpp")
