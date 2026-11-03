@@ -441,19 +441,42 @@ namespace Media
 			}
 			::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 
+			// Connecting to Windows' media controls: never wait forever (that showed as "Connecting..." for good) -
+			// give each try 10 seconds, say so in the log, and keep trying.
 			wmc::GlobalSystemMediaTransportControlsSessionManager mgr{ nullptr };
-			try {
-				mgr = wmc::GlobalSystemMediaTransportControlsSessionManager::RequestAsync().get();
-			} catch (const winrt::hresult_error& e) {
-				spdlog::error("Windows media controls not available ({:08X} {}) - needs Windows 10 version 1809 or newer",
-					static_cast<std::uint32_t>(e.code()), winrt::to_string(e.message()));
-			} catch (...) {
-				spdlog::error("Windows media controls not available");
-			}
-			if (!mgr) {
-				std::lock_guard lk(S.mtx);
-				S.snap.unavailable = true;
-				return;
+			spdlog::info("Connecting to Windows' media controls...");
+			for (int attempt = 1; !mgr; ++attempt) {
+				bool fatal = false;
+				try {
+					auto op = wmc::GlobalSystemMediaTransportControlsSessionManager::RequestAsync();
+					const auto status = op.wait_for(std::chrono::seconds(10));
+					if (status == winrt::Windows::Foundation::AsyncStatus::Completed) {
+						mgr = op.GetResults();
+					} else if (status == winrt::Windows::Foundation::AsyncStatus::Error) {
+						op.GetResults();  // throws the reason
+					} else {
+						spdlog::warn("Windows' media controls didn't answer within 10 seconds (try {}) - trying again", attempt);
+						try {
+							op.Cancel();
+						} catch (...) {
+						}
+					}
+				} catch (const winrt::hresult_error& e) {
+					spdlog::error("Windows media controls not available ({:08X} {}) - needs Windows 10 version 1809 or newer",
+						static_cast<std::uint32_t>(e.code()), winrt::to_string(e.message()));
+					fatal = attempt >= 3;
+				} catch (...) {
+					spdlog::error("Windows media controls not available");
+					fatal = attempt >= 3;
+				}
+				if (fatal) {
+					std::lock_guard lk(S.mtx);
+					S.snap.unavailable = true;
+					return;
+				}
+				if (!mgr) {
+					std::this_thread::sleep_for(std::chrono::seconds(2));
+				}
 			}
 			spdlog::info("Windows media controls ready");
 
@@ -617,6 +640,11 @@ namespace Media
 					}
 				}
 
+				static bool firstDone = false;
+				if (!firstDone) {
+					firstDone = true;
+					spdlog::info("Media: first update done - {}", snap.hasSession ? "a player is connected" : "no player found yet");
+				}
 				std::lock_guard lk(S.mtx);
 				S.snap = snap;
 			}

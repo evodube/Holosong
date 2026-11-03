@@ -30,6 +30,7 @@ namespace Widget
 		bool inputSink = true;    // [Debug] bInputSink: listen to the keyboard and mouse
 		bool blockInput = true;   // [Debug] bBlockInput: in cursor mode the game and other mods get no keys
 		bool logInput = false;    // [Debug] bLogInput
+		bool lowLevelHooks = true;  // [Debug] bLowLevelHooks: keys/mouse from Windows' low-level hooks (else DirectInput only)
 	};
 
 	void                 LoadSettings();  // plugin load

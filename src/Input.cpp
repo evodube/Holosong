@@ -18,9 +18,13 @@
 // Exception from CommonLibF4 apply (see EXCEPTIONS.txt).
 // Source code: https://github.com/evodube/holosong
 
-// DirectInput 8 hook: the two calls every DirectInput keyboard/mouse is read with (GetDeviceState, GetDeviceData)
-// are replaced in the device class's function table. All of the game's devices share that table, so a throwaway
-// device of our own is enough to find it - no game addresses, works on every Fallout 4 version.
+// Two layers, neither needs game addresses (works on every Fallout 4 version):
+//  1. Windows low-level keyboard and mouse hooks (WH_KEYBOARD_LL / WH_MOUSE_LL) on a thread of our own: they see every
+//     key and click before the game does, however the game reads them (DirectInput, raw input, window messages), and
+//     can hold them back in cursor mode. Only while Fallout 4 is the window in front.
+//  2. DirectInput 8: GetDeviceState / GetDeviceData replaced in the device class's function table (all devices share
+//     it, so a throwaway device of our own finds it). Used for the keys/mouse only if the hooks above couldn't be set;
+//     its blocking stays on either way as a second wall.
 
 #define DIRECTINPUT_VERSION 0x0800
 #ifndef NOMINMAX
@@ -34,6 +38,7 @@
 #include <spdlog/spdlog.h>
 
 #include <atomic>
+#include <format>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -59,6 +64,8 @@ namespace Input
 		std::atomic<Callback> g_callback{ nullptr };
 		std::atomic<bool>     g_block{ false };
 		std::atomic<bool>     g_keyboardSeen{ false }, g_mouseSeen{ false };
+		std::atomic<bool>     g_llKeys{ false }, g_llMouse{ false };  // the low-level hooks are in place (they report, not DirectInput)
+		std::atomic<bool>     g_llKeySeen{ false }, g_llMouseSeen{ false };
 
 		enum class DevType : std::uint8_t
 		{
@@ -108,6 +115,15 @@ namespace Input
 			}
 		}
 
+		// from DirectInput: only when the low-level hooks aren't reporting that device already
+		void EmitDI(const Event& a_e)
+		{
+			const bool mouse = a_e.kind != Kind::Key;
+			if (mouse ? !g_llMouse : !g_llKeys) {
+				Emit(a_e);
+			}
+		}
+
 		template <int I>
 		HRESULT STDMETHODCALLTYPE HookGetDeviceData(void* a_dev, DWORD a_size, LPDIDEVICEOBJECTDATA a_data, LPDWORD a_inOut, DWORD a_flags)
 		{
@@ -140,25 +156,25 @@ namespace Input
 				if (type == DevType::Keyboard) {
 					const bool down = (val & 0x80) != 0;
 					if (!peek) {
-						Emit({ Kind::Key, ofs, down });
+						EmitDI({ Kind::Key, ofs, down });
 					}
 					keep = !block || !down;  // releases still go through
 				} else {
 					if (ofs == DIMOFS_X || ofs == DIMOFS_Y) {
 						if (!peek) {
 							const float d = static_cast<float>(static_cast<LONG>(val));
-							Emit({ Kind::MouseMove, 0, false, ofs == DIMOFS_X ? d : 0.0f, ofs == DIMOFS_Y ? d : 0.0f });
+							EmitDI({ Kind::MouseMove, 0, false, ofs == DIMOFS_X ? d : 0.0f, ofs == DIMOFS_Y ? d : 0.0f });
 						}
 						keep = !block;
 					} else if (ofs == DIMOFS_Z) {
 						if (!peek) {
-							Emit({ Kind::Wheel, 0, false, 0.0f, static_cast<float>(static_cast<LONG>(val)) / WHEEL_DELTA });
+							EmitDI({ Kind::Wheel, 0, false, 0.0f, static_cast<float>(static_cast<LONG>(val)) / WHEEL_DELTA });
 						}
 						keep = !block;
 					} else if (ofs >= DIMOFS_BUTTON0 && ofs <= DIMOFS_BUTTON7) {
 						const bool down = (val & 0x80) != 0;
 						if (!peek) {
-							Emit({ Kind::MouseButton, static_cast<std::uint32_t>(ofs - DIMOFS_BUTTON0), down });
+							EmitDI({ Kind::MouseButton, static_cast<std::uint32_t>(ofs - DIMOFS_BUTTON0), down });
 						}
 						keep = !block || !down;
 					}
@@ -191,7 +207,7 @@ namespace Input
 					for (std::uint32_t k = 0; k < 256; ++k) {
 						const bool now = (keys[k] & 0x80) != 0, was = (info.keys[k] & 0x80) != 0;
 						if (now != was) {
-							Emit({ Kind::Key, k, now });
+							EmitDI({ Kind::Key, k, now });
 						}
 					}
 				}
@@ -205,15 +221,15 @@ namespace Input
 				const int nb = a_size == sizeof(DIMOUSESTATE2) ? 8 : 4;
 				if (!info.buffered) {
 					if (ms->lX || ms->lY) {
-						Emit({ Kind::MouseMove, 0, false, static_cast<float>(ms->lX), static_cast<float>(ms->lY) });
+						EmitDI({ Kind::MouseMove, 0, false, static_cast<float>(ms->lX), static_cast<float>(ms->lY) });
 					}
 					if (ms->lZ) {
-						Emit({ Kind::Wheel, 0, false, 0.0f, static_cast<float>(ms->lZ) / WHEEL_DELTA });
+						EmitDI({ Kind::Wheel, 0, false, 0.0f, static_cast<float>(ms->lZ) / WHEEL_DELTA });
 					}
 					for (int b = 0; b < nb; ++b) {
 						const bool now = (ms->rgbButtons[b] & 0x80) != 0, was = (info.buttons[b] & 0x80) != 0;
 						if (now != was) {
-							Emit({ Kind::MouseButton, static_cast<std::uint32_t>(b), now });
+							EmitDI({ Kind::MouseButton, static_cast<std::uint32_t>(b), now });
 						}
 					}
 				}
@@ -258,6 +274,139 @@ namespace Input
 			return ok;
 		}
 
+
+		// ---------------------------------------------------------------- low-level hooks
+		HHOOK             g_kbHook = nullptr, g_msHook = nullptr;
+		bool              g_llDown[256]{};  // keys down (the hook also sees auto-repeat: only the first press counts)
+
+		bool GameInFront()
+		{
+			HWND  w = ::GetForegroundWindow();
+			DWORD pid = 0;
+			::GetWindowThreadProcessId(w, &pid);
+			return w && pid == ::GetCurrentProcessId();
+		}
+
+		LRESULT CALLBACK KeyboardProc(int a_code, WPARAM a_wp, LPARAM a_lp)
+		{
+			if (a_code == HC_ACTION && GameInFront()) {
+				const auto* k = reinterpret_cast<const KBDLLHOOKSTRUCT*>(a_lp);
+				const bool  up = (k->flags & LLKHF_UP) != 0;
+				UINT        sc = k->scanCode;
+				bool        ext = (k->flags & LLKHF_EXTENDED) != 0;
+				if (sc == 0) {  // a few keys come without a scan code: from the virtual key
+					const UINT x = ::MapVirtualKeyW(k->vkCode, MAPVK_VK_TO_VSC_EX);
+					sc = x & 0xFF;
+					ext = (x & 0xFF00) != 0;
+				}
+				const std::uint32_t dik = (sc & 0x7F) | (ext ? 0x80u : 0u);
+				g_llKeySeen = true;
+				const bool was = g_llDown[dik];
+				g_llDown[dik] = !up;
+				if (up || !was) {
+					Emit({ Kind::Key, dik, !up });
+				}
+				if (g_block && !up) {
+					return 1;  // cursor mode: the game doesn't get the press (releases go through)
+				}
+			}
+			return ::CallNextHookEx(nullptr, a_code, a_wp, a_lp);
+		}
+
+		LRESULT CALLBACK MouseProc(int a_code, WPARAM a_wp, LPARAM a_lp)
+		{
+			if (a_code == HC_ACTION && GameInFront()) {
+				const auto* m = reinterpret_cast<const MSLLHOOKSTRUCT*>(a_lp);
+				const bool  block = g_block;
+				g_llMouseSeen = true;
+				switch (a_wp) {
+				case WM_MOUSEMOVE:
+					if (block) {
+						// held back, so the cursor stays where it is: the movement is where it would have gone
+						POINT cur{};
+						::GetCursorPos(&cur);
+						const float dx = static_cast<float>(m->pt.x - cur.x), dy = static_cast<float>(m->pt.y - cur.y);
+						if (dx != 0.0f || dy != 0.0f) {
+							Emit({ Kind::MouseMove, 0, false, dx, dy });
+						}
+						return 1;
+					}
+					break;
+				case WM_LBUTTONDOWN:
+				case WM_LBUTTONUP:
+				case WM_RBUTTONDOWN:
+				case WM_RBUTTONUP:
+				case WM_MBUTTONDOWN:
+				case WM_MBUTTONUP:
+				case WM_XBUTTONDOWN:
+				case WM_XBUTTONUP:
+					{
+						const bool    down = a_wp == WM_LBUTTONDOWN || a_wp == WM_RBUTTONDOWN || a_wp == WM_MBUTTONDOWN || a_wp == WM_XBUTTONDOWN;
+						std::uint32_t b = 0;
+						if (a_wp == WM_RBUTTONDOWN || a_wp == WM_RBUTTONUP) {
+							b = 1;
+						} else if (a_wp == WM_MBUTTONDOWN || a_wp == WM_MBUTTONUP) {
+							b = 2;
+						} else if (a_wp == WM_XBUTTONDOWN || a_wp == WM_XBUTTONUP) {
+							b = HIWORD(m->mouseData) == XBUTTON2 ? 4 : 3;
+						}
+						Emit({ Kind::MouseButton, b, down });
+						if (block && down) {
+							return 1;
+						}
+						break;
+					}
+				case WM_MOUSEWHEEL:
+					Emit({ Kind::Wheel, 0, false, 0.0f, static_cast<float>(static_cast<short>(HIWORD(m->mouseData))) / WHEEL_DELTA });
+					if (block) {
+						return 1;
+					}
+					break;
+				default:
+					break;
+				}
+			}
+			return ::CallNextHookEx(nullptr, a_code, a_wp, a_lp);
+		}
+
+		HANDLE g_hooksReady = nullptr;
+
+		DWORD WINAPI HookThread(LPVOID)
+		{
+			// above the game's busy threads: Windows drops a low-level hook that keeps input waiting too long
+			::SetThreadPriority(::GetCurrentThread(), THREAD_PRIORITY_HIGHEST);
+			HMODULE self = nullptr;
+			::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(&HookThread), &self);
+			g_kbHook = ::SetWindowsHookExW(WH_KEYBOARD_LL, KeyboardProc, self, 0);
+			const DWORD kbErr = g_kbHook ? 0 : ::GetLastError();
+			g_msHook = ::SetWindowsHookExW(WH_MOUSE_LL, MouseProc, self, 0);
+			const DWORD msErr = g_msHook ? 0 : ::GetLastError();
+			g_llKeys = g_kbHook != nullptr;
+			g_llMouse = g_msHook != nullptr;
+			spdlog::info("Input: low-level keyboard hook {}, mouse hook {}", g_kbHook ? "in place" : std::format("FAILED ({})", kbErr),
+				g_msHook ? "in place" : std::format("FAILED ({})", msErr));
+			::SetEvent(g_hooksReady);
+			MSG msg;
+			while (::GetMessageW(&msg, nullptr, 0, 0) > 0) {
+				::TranslateMessage(&msg);
+				::DispatchMessageW(&msg);
+			}
+			return 0;
+		}
+
+		bool StartLowLevelHooks()
+		{
+			g_hooksReady = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+			HANDLE t = ::CreateThread(nullptr, 0, HookThread, nullptr, 0, nullptr);
+			if (!t) {
+				spdlog::error("Input: could not start the hook thread ({})", ::GetLastError());
+				return false;
+			}
+			::CloseHandle(t);
+			::WaitForSingleObject(g_hooksReady, 3000);
+			return g_llKeys || g_llMouse;
+		}
+
 		using DirectInput8Create_t = HRESULT(WINAPI*)(HINSTANCE, DWORD, REFIID, LPVOID*, LPUNKNOWN);
 
 		template <int I, class DI, class Dev>
@@ -278,9 +427,13 @@ namespace Input
 		}
 	}
 
-	bool Install(Callback a_callback)
+	bool Install(Callback a_callback, bool a_lowLevel)
 	{
 		g_callback = a_callback;
+		const bool ll = a_lowLevel && StartLowLevelHooks();
+		if (!a_lowLevel) {
+			spdlog::info("Input: low-level hooks off (bLowLevelHooks=0) - keys come from DirectInput only");
+		}
 		// The same dinput8.dll the game uses (a dinput8.dll in the game folder - an ENB/proxy - is picked first, like for the game)
 		HMODULE mod = ::LoadLibraryW(L"dinput8.dll");  // stays loaded: its function table is patched
 		auto    create = mod ? reinterpret_cast<DirectInput8Create_t>(::GetProcAddress(mod, "DirectInput8Create")) : nullptr;
@@ -291,10 +444,14 @@ namespace Input
 		const bool w = HookClass<0, IDirectInput8W, IDirectInputDevice8W>(create, IID_IDirectInput8W);
 		const bool a = HookClass<1, IDirectInput8A, IDirectInputDevice8A>(create, IID_IDirectInput8A);
 		spdlog::info("Input: DirectInput hooked (wide {}, ANSI {})", w ? "yes" : "no", a ? "yes" : "no");
-		return w || a;
+		return ll || w || a;
 	}
 
 	void SetBlocking(bool a_block) { g_block = a_block; }
 	bool KeyboardSeen() { return g_keyboardSeen; }
 	bool MouseSeen() { return g_mouseSeen; }
+	bool LowLevelKeys() { return g_llKeys; }
+	bool LowLevelMouse() { return g_llMouse; }
+	bool LowLevelKeySeen() { return g_llKeySeen; }
+	bool LowLevelMouseSeen() { return g_llMouseSeen; }
 }

@@ -20,8 +20,8 @@
 
 #pragma once
 
-// Keyboard and mouse, read where Fallout 4 reads them: DirectInput 8 (the same layer F4SE hooks).
-// Nothing here depends on the game's version - no game addresses, so OG, NG and AE all work the same.
+// Keyboard and mouse: Windows low-level hooks (every key and click, before the game sees it), with DirectInput 8 as
+// the fallback. Nothing here depends on the game's version - no game addresses, so OG, NG and AE all work the same.
 // Compiled without the precompiled header (it needs the real <dinput.h>).
 
 #include <cstdint>
@@ -46,15 +46,19 @@ namespace Input
 
 	using Callback = void (*)(const Event&);
 
-	// Hooks DirectInput's keyboard/mouse reads (plugin load). Every key/mouse event the game reads goes to a_callback,
-	// on the thread that reads it. False if DirectInput couldn't be reached.
-	bool Install(Callback a_callback);
+	// Plugin load. Every key/mouse event goes to a_callback (on the hook thread, or the game's input thread with the
+	// DirectInput fallback). a_lowLevel = false: DirectInput only. False if neither could be set up.
+	bool Install(Callback a_callback, bool a_lowLevel);
 
 	// Cursor mode: the game (and every mod reading input through it) gets no key presses, mouse buttons, wheel or
 	// mouse movement - only releases, so nothing stays held when the cursor goes away.
 	void SetBlocking(bool a_block);
 
 	// For the log: has the game read the keyboard / mouse through DirectInput yet?
-	bool KeyboardSeen();
+	bool KeyboardSeen();  // DirectInput
 	bool MouseSeen();
+	bool LowLevelKeys();  // the low-level hooks are in place
+	bool LowLevelMouse();
+	bool LowLevelKeySeen();  // ...and have seen input while the game was in front
+	bool LowLevelMouseSeen();
 }

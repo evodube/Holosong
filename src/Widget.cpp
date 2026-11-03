@@ -1984,6 +1984,104 @@ namespace Widget
 			return cfg.showSound && left >= soundH ? soundH : 0.0f;
 		}
 
+		// Small slider for the quick bar: value 0-1, returns true while it changes
+		bool QuickSlider(const char* a_id, float a_x0, float a_x1, float a_y, float* a_v)
+		{
+			auto* dl = ImGui::GetWindowDrawList();
+			ImGui::SetCursorScreenPos(ImVec2(a_x0, a_y - U(9.0f)));
+			ImGui::InvisibleButton(a_id, ImVec2((std::max)(1.0f, a_x1 - a_x0), U(18.0f)));
+			const bool  active = ImGui::IsItemActive();
+			const float h = Ease(ImGui::GetItemID(), ImGui::IsItemHovered() || active);
+			bool        changed = false;
+			if (active) {
+				*a_v = std::clamp((ImGui::GetIO().MousePos.x - a_x0) / (a_x1 - a_x0), 0.0f, 1.0f);
+				changed = true;
+			} else if (ImGui::IsItemHovered() && g_wheelFrame != 0.0f) {
+				*a_v = std::clamp(*a_v + (g_wheelFrame > 0.0f ? 0.05f : -0.05f), 0.0f, 1.0f);
+				changed = true;
+			}
+			const float gx = a_x0 + (a_x1 - a_x0) * *a_v;
+			FadeControls fade;
+			dl->AddRectFilled(ImVec2(a_x0, a_y - U(1.0f)), ImVec2(a_x1, a_y + U(1.0f)), Col(255, 255, 255, 34), Corner(U(1.0f)));
+			dl->AddRectFilledMultiColor(ImVec2(a_x0, a_y - U(1.0f)), ImVec2(gx, a_y + U(1.0f)), kGoldDim(), kGold(), kGold(), kGoldDim());
+			const float hw = U(2.0f + 1.0f * h), hh = U(7.0f + 2.0f * h);
+			dl->AddRectFilled(ImVec2(gx - hw, a_y - hh), ImVec2(gx + hw, a_y + hh), kGold(), Corner(hw));
+			return changed;
+		}
+
+		// Cursor mode: a slim bar under the widget (above it near the bottom of the screen) with the settings button
+		// and the widget's scale and opacity, so they're right there without opening the settings window.
+		void DrawQuickBar(ImVec2 a, ImVec2 b)
+		{
+			const float  barH = U(44.0f), w = (std::max)(b.x - a.x, U(340.0f));
+			const float  gapY = U(12.0f);  // clear of the widget's resize edge
+			ImVec2       p(a.x, b.y + gapY);
+			if (p.y + barH > g_displayH - 4.0f) {
+				p.y = a.y - gapY - barH;
+			}
+			p.x = std::clamp(p.x, 4.0f, (std::max)(4.0f, g_displayW - w - 4.0f));
+			p.y = std::clamp(p.y, 4.0f, (std::max)(4.0f, g_displayH - barH - 4.0f));
+			const ImVec2 q = p + ImVec2(w, barH);
+			ImGui::SetNextWindowPos(p, ImGuiCond_Always);
+			ImGui::SetNextWindowSize(ImVec2(w, barH), ImGuiCond_Always);
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+			ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
+			ImGui::Begin("##hs_quick", nullptr,
+				ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
+					ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse);
+			ImGui::PopStyleVar(3);
+			auto* dl = ImGui::GetWindowDrawList();
+			Panel(dl, p, q, true);
+			const float cy = (p.y + q.y) * 0.5f, pad = U(10.0f), bs = U(30.0f);
+			float       x = p.x + pad;
+			if (Button("##qset", ImVec2(x, cy - bs * 0.5f), ImVec2(bs, bs), BtnStyle::Ghost, IconGear, bs * 0.62f, true, g_settingsOpen, "All settings")) {
+				g_settingsOpen = !g_settingsOpen;
+			}
+			x += bs + U(10.0f);
+			const float ts = U(12.0f);
+			const float half = (q.x - pad - x - U(14.0f)) * 0.5f;
+			// scale 50 - 100 %
+			{
+				dl->AddText(FText(), ts, ImVec2(x, cy - ts * 0.55f), kDim(), "Scale");
+				const float lw = TextW(FText(), ts, "Opacity") + U(8.0f);
+				float       v = (cfg.scalePct - 50) / 50.0f;
+				if (QuickSlider("##qscale", x + lw, x + half - U(34.0f), cy, &v) && !cfg.locked) {
+					const int pct = 50 + static_cast<int>(std::lround(v * 50.0f));
+					if (pct != cfg.scalePct) {
+						cfg.scalePct = pct;
+						g_pendingFonts = true;
+						MarkDirty();
+					}
+				}
+				const std::string n = std::format("{}%", cfg.scalePct);
+				dl->AddText(FText(), ts, ImVec2(x + half - TextW(FText(), ts, n.c_str()), cy - ts * 0.55f), kText(), n.c_str());
+				if (ImGui::IsItemHovered() && g_drag.mode == Grab::None) {
+					ImGui::SetTooltip(cfg.locked ? "The widget is locked (Settings > Layout)" : "Widget scale - Ctrl + mouse wheel over the widget works too");
+				}
+			}
+			x += half + U(14.0f);
+			// background opacity 30 - 100 %
+			{
+				dl->AddText(FText(), ts, ImVec2(x, cy - ts * 0.55f), kDim(), "Opacity");
+				const float lw = TextW(FText(), ts, "Opacity") + U(8.0f);
+				float       v = (cfg.opacityPct - 30) / 70.0f;
+				if (QuickSlider("##qopacity", x + lw, x + half - U(34.0f), cy, &v)) {
+					const int pct = 30 + static_cast<int>(std::lround(v * 70.0f));
+					if (pct != cfg.opacityPct) {
+						cfg.opacityPct = pct;
+						MarkDirty();
+					}
+				}
+				const std::string n = std::format("{}%", cfg.opacityPct);
+				dl->AddText(FText(), ts, ImVec2(x + half - TextW(FText(), ts, n.c_str()), cy - ts * 0.55f), kText(), n.c_str());
+				if (ImGui::IsItemHovered() && g_drag.mode == Grab::None) {
+					ImGui::SetTooltip("How see-through the widget's background is");
+				}
+			}
+			ImGui::End();
+		}
+
 		void DrawWidget(const Media::Snapshot& a_m)
 		{
 			KeepOnScreen();
@@ -2031,6 +2129,9 @@ namespace Widget
 			}
 			dl->PopClipRect();
 			ImGui::End();
+			if (g_cursor && g_drag.mode == Grab::None) {
+				DrawQuickBar(a, b);
+			}
 		}
 
 		// ================================================================ settings window
@@ -2522,11 +2623,11 @@ namespace Widget
 		dbg.hookPresent = ReadBool("Debug", "bHookPresent", true);
 		dbg.inputSink = ReadBool("Debug", "bInputSink", true);
 		dbg.logInput = ReadBool("Debug", "bLogInput", false);
+		dbg.lowLevelHooks = ReadBool("Debug", "bLowLevelHooks", true);
 		dbg.blockInput = ReadBool("Debug", "bBlockInput", true);
 		spdlog::info("INI: {} ({})", g_iniPath, fs::exists(g_iniPath, ec) ? "found" : "NOT FOUND - using defaults");
 		spdlog::info("Keys: show/hide {} ({}), cursor {} ({}), music app \"{}\"", KeyName(cfg.keyVk[kKeyToggle]), cfg.keyVk[kKeyToggle], KeyName(cfg.keyVk[kKeyCursor]),
 			cfg.keyVk[kKeyCursor], cfg.musicApp);
-		Media::Start(MediaSettings());
 	}
 
 	const DebugSwitches& GetDebugSwitches() { return dbg; }
@@ -2537,12 +2638,13 @@ namespace Widget
 			spdlog::warn("Input DISABLED by bInputSink=0 - no keys will work");
 			return false;
 		}
-		g_inputHooked = Input::Install(&OnInputEvent);
+		g_inputHooked = Input::Install(&OnInputEvent, dbg.lowLevelHooks);
 		return g_inputHooked;
 	}
 
 	void OnDataLoaded()
 	{
+		Media::Start(MediaSettings());  // now, not at plugin load: Windows' media controls can stall that early in the game's start
 		if (!Fenced([] { FindSoundCategories(); return true; }, "FindSoundCategories")) {
 			spdlog::warn("Could not read the game's sound categories - muting the game's music is off");
 			g_gameStateBroken = false;  // this one failing doesn't say anything about the menus / combat checks
@@ -2552,7 +2654,9 @@ namespace Widget
 	void OnGameLoaded()
 	{
 		g_gameLoaded = true;
-		spdlog::info("Game loaded. DirectInput: keyboard {}, mouse {}", Input::KeyboardSeen() ? "seen" : "NOT SEEN YET", Input::MouseSeen() ? "seen" : "NOT SEEN YET");
+		spdlog::info("Game loaded. Low-level hooks: keyboard {} ({}), mouse {} ({}). DirectInput: keyboard {}, mouse {}",
+			Input::LowLevelKeys() ? "on" : "off", Input::LowLevelKeySeen() ? "keys seen" : "no keys yet", Input::LowLevelMouse() ? "on" : "off",
+			Input::LowLevelMouseSeen() ? "mouse seen" : "no mouse yet", Input::KeyboardSeen() ? "seen" : "not seen", Input::MouseSeen() ? "seen" : "not seen");
 	}
 
 	int SehFilter(EXCEPTION_POINTERS* a_info, const char* a_where)
