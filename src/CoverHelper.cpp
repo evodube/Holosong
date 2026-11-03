@@ -32,6 +32,7 @@
 #	define NOMINMAX
 #endif
 #include <Windows.h>
+#include <shellapi.h>
 
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
