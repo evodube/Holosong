@@ -887,6 +887,21 @@ namespace Widget
 				spdlog::info("Fallout 4 has focus again");
 			}
 			g_wasInFront = front;
+			// Ctrl / Shift / Alt that Windows says are up but we still have down (a release that got lost): let go.
+			// A stuck Ctrl turned a click on a settings slider into a Ctrl+click and the mouse wheel into "scale".
+			if (front && g_gameLoaded) {
+				static int stale[6]{};
+				const int  mods[6] = { VK_LSHIFT, VK_RSHIFT, VK_LCONTROL, VK_RCONTROL, VK_LMENU, VK_RMENU };
+				for (int i = 0; i < 6; ++i) {
+					const std::uint32_t dik = VirtualKeyToDIK(mods[i]);
+					const bool          up = (::GetAsyncKeyState(mods[i]) & 0x8000) == 0;
+					stale[i] = (dik && dik < 256 && g_keyState[dik] && up) ? stale[i] + 1 : 0;
+					if (stale[i] >= 3) {  // three frames in a row
+						stale[i] = 0;
+						OnInputEvent({ Input::Kind::Key, dik, false });
+					}
+				}
+			}
 			for (int vk = 0x08; vk < 0xFF; ++vk) {
 				if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || (vk >= VK_LBUTTON && vk <= VK_XBUTTON2)) {
 					continue;  // the left/right versions are read instead; mouse buttons come from the mouse hook
@@ -922,13 +937,23 @@ namespace Widget
 			}
 			void OnButtonEvent(const RE::ButtonEvent* a_e) override
 			{
-				if (!a_e || a_e->device.get() != RE::INPUT_DEVICE::kKeyboard || a_e->idCode < 0 || a_e->idCode >= 256) {
+				if (!a_e || a_e->device.get() != RE::INPUT_DEVICE::kKeyboard || a_e->idCode <= 0 || a_e->idCode >= 256) {
+					return;
+				}
+				// Fallout 4's keyboard events carry Windows virtual-key codes (not scan codes like Skyrim's): Page Up is
+				// 0x21, which read as a scan code is "F" - convert
+				int vk = a_e->idCode;
+				if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU) {
+					return;  // which side isn't known: the other sources report Left/Right
+				}
+				const std::uint32_t dik = VirtualKeyToDIK(vk);
+				if (!dik || dik >= 256) {
 					return;
 				}
 				if (a_e->QJustPressed()) {
-					OnInputEvent({ Input::Kind::Key, static_cast<std::uint32_t>(a_e->idCode), true });
+					OnInputEvent({ Input::Kind::Key, dik, true });
 				} else if (a_e->QReleased()) {
-					OnInputEvent({ Input::Kind::Key, static_cast<std::uint32_t>(a_e->idCode), false });
+					OnInputEvent({ Input::Kind::Key, dik, false });
 				}
 			}
 		};
@@ -998,6 +1023,9 @@ namespace Widget
 					break;
 				}
 			}
+			// Ctrl / Shift as they really are now (a lost release must never leave ImGui thinking they're held)
+			io.AddKeyEvent(ImGuiMod_Ctrl, g_ctrlDown.load());
+			io.AddKeyEvent(ImGuiMod_Shift, g_shiftDown.load());
 		}
 
 		// ================================================================ drawing helpers
@@ -2946,6 +2974,7 @@ namespace Widget
 			io.AddMousePosEvent(g_mouseX, g_mouseY);
 		}
 		if (!g_cursor && lastCursor) {
+			io.ClearInputKeys();  // nothing stays held for next time
 			io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
 			for (int b = 0; b < 5; ++b) {
 				io.AddMouseButtonEvent(b, false);

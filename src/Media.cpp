@@ -55,6 +55,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <thread>
 
@@ -326,20 +327,140 @@ namespace Media
 			return true;
 		}
 
+		// ---- fetching the cover
+		// The song's details come with the media session, but the cover is a separate transfer from the player's own
+		// process. Inside Fallout 4 that transfer never finished on the media thread, so each try now runs on a fresh
+		// thread of its own, in a single-threaded apartment that keeps handling Windows' messages and calls while it
+		// waits (the way these transfers are meant to be waited for), for up to 10 seconds.
+		enum class Fetch
+		{
+			Ok,
+			Empty,
+			Timeout,
+			Busy,
+			Error
+		};
+		std::atomic<int> g_artWorkers{ 0 };
+
+		struct FetchJob
+		{
+			std::mutex                m;
+			std::condition_variable   cv;
+			bool                      done = false;
+			Fetch                     result = Fetch::Error;
+			std::vector<std::uint8_t> bytes;
+		};
+
+		template <class Op>
+		bool WaitPumping(const Op& a_op, HANDLE a_ev, DWORD a_ms)
+		{
+			::ResetEvent(a_ev);
+			a_op.Completed([a_ev](auto&&, auto&&) { ::SetEvent(a_ev); });
+			DWORD idx = 0;
+			return ::CoWaitForMultipleHandles(COWAIT_DISPATCH_CALLS | COWAIT_DISPATCH_WINDOW_MESSAGES, a_ms, 1, &a_ev, &idx) == S_OK;
+		}
+
+		void FetchWorker(std::shared_ptr<FetchJob> a_job, wss::IRandomAccessStreamReference a_ref)
+		{
+			Fetch                     r = Fetch::Error;
+			std::vector<std::uint8_t> bytes;
+			bool                      apartment = false;
+			HANDLE                    ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
+			bool                      timedOut = false;
+			try {
+				winrt::init_apartment(winrt::apartment_type::single_threaded);
+				apartment = true;
+			} catch (...) {
+			}
+			try {
+				auto op = a_ref.OpenReadAsync();
+				if (!ev || !WaitPumping(op, ev, 10000)) {
+					r = Fetch::Timeout;
+					timedOut = true;
+				} else {
+					auto       stream = op.GetResults();
+					const auto size = static_cast<std::uint32_t>((std::min)(stream.Size(), static_cast<std::uint64_t>(16u << 20)));
+					if (size == 0) {
+						r = Fetch::Empty;
+					} else {
+						wss::DataReader reader(stream.GetInputStreamAt(0));
+						auto            load = reader.LoadAsync(size);
+						if (!WaitPumping(load, ev, 10000)) {
+							r = Fetch::Timeout;
+							timedOut = true;
+						} else {
+							bytes.resize(load.GetResults());
+							reader.ReadBytes(bytes);
+							r = bytes.empty() ? Fetch::Empty : Fetch::Ok;
+						}
+					}
+				}
+			} catch (const winrt::hresult_error& e) {
+				spdlog::warn("Album art: {:08X} {}", static_cast<std::uint32_t>(e.code()), winrt::to_string(e.message()));
+				r = Fetch::Error;
+			} catch (...) {
+				r = Fetch::Error;
+			}
+			if (ev && !timedOut) {
+				::CloseHandle(ev);  // (after a timeout the transfer may still finish and signal it: left open)
+			}
+			{
+				std::lock_guard lk(a_job->m);
+				a_job->result = r;
+				a_job->bytes = std::move(bytes);
+				a_job->done = true;
+			}
+			a_job->cv.notify_all();
+			--g_artWorkers;
+			if (apartment) {
+				winrt::uninit_apartment();
+			}
+		}
+
+		Fetch FetchArtBytes(const wss::IRandomAccessStreamReference& a_ref, std::vector<std::uint8_t>& a_out)
+		{
+			if (g_artWorkers >= 2) {
+				return Fetch::Busy;  // earlier tries are still waiting on the player
+			}
+			auto job = std::make_shared<FetchJob>();
+			++g_artWorkers;
+			try {
+				std::thread(FetchWorker, job, a_ref).detach();
+			} catch (...) {
+				--g_artWorkers;
+				return Fetch::Error;
+			}
+			std::unique_lock lk(job->m);
+			if (!job->cv.wait_for(lk, std::chrono::seconds(11), [&] { return job->done; })) {
+				return Fetch::Timeout;
+			}
+			a_out = std::move(job->bytes);
+			return job->result;
+		}
+
 		bool ReadArt(const wss::IRandomAccessStreamReference& a_ref, bool a_spotify, std::vector<std::uint8_t>& a_rgba, int& a_w, int& a_h)
 		{
 			if (!a_ref) {
+				spdlog::info("Album art: the player gives no picture for this song");
 				return false;
 			}
-			auto stream = Await(a_ref.OpenReadAsync(), 4000, "album art");
-			const auto size = static_cast<std::uint32_t>((std::min)(stream.Size(), static_cast<std::uint64_t>(16u << 20)));
-			if (size == 0) {
+			std::vector<std::uint8_t> bytes;
+			switch (FetchArtBytes(a_ref, bytes)) {
+			case Fetch::Ok:
+				break;
+			case Fetch::Empty:
+				spdlog::info("Album art: the player's picture for this song is empty");
+				return false;
+			case Fetch::Timeout:
+				spdlog::warn("Album art: the player didn't hand the picture over within 10 seconds (something in the game's process may be holding the transfer up)");
+				return false;
+			case Fetch::Busy:
+				spdlog::warn("Album art: earlier tries are still waiting on the player - not starting another");
+				return false;
+			default:
+				spdlog::warn("Album art: the picture couldn't be read");
 				return false;
 			}
-			wss::DataReader reader(stream.GetInputStreamAt(0));
-			const auto      got = Await(reader.LoadAsync(size), 4000, "album art data");
-			std::vector<std::uint8_t> bytes(got);
-			reader.ReadBytes(bytes);
 			int   w = 0, h = 0, n = 0;
 			auto* px = stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &n, 4);
 			if (!px) {

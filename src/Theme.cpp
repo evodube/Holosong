@@ -2008,7 +2008,7 @@ namespace Theme
 			float      valueW;
 			ImVec2     a, b;
 			bool       hov;
-			const bool changed = HallSlider(a_width, valueW, a, b, hov, [&] { return ImGui::SliderInt(a_label, a_v, a_min, a_max, ""); });
+			const bool changed = HallSlider(a_width, valueW, a, b, hov, [&] { return ImGui::SliderInt(a_label, a_v, a_min, a_max, "", ImGuiSliderFlags_NoInput); });
 			HallSliderTrack(a, b, a_max > a_min ? static_cast<float>(*a_v - a_min) / (a_max - a_min) : 0.0f, hov, parch);
 			char buf[96];
 			std::snprintf(buf, sizeof buf, a_format, *a_v);
@@ -2018,7 +2018,7 @@ namespace Theme
 		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(S(12.0f), S(10.0f)));
 		ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, S(26.0f));
 		ImGui::SetNextItemWidth(a_width);
-		const bool changed = ImGui::SliderInt(a_label, a_v, a_min, a_max, a_format);
+		const bool changed = ImGui::SliderInt(a_label, a_v, a_min, a_max, a_format, ImGuiSliderFlags_NoInput);
 		ImGui::PopStyleVar(2);
 		return changed;
 	}
@@ -2030,7 +2030,7 @@ namespace Theme
 			float      valueW;
 			ImVec2     a, b;
 			bool       hov;
-			const bool changed = HallSlider(a_width, valueW, a, b, hov, [&] { return ImGui::SliderFloat(a_label, a_v, a_min, a_max, ""); });
+			const bool changed = HallSlider(a_width, valueW, a, b, hov, [&] { return ImGui::SliderFloat(a_label, a_v, a_min, a_max, "", ImGuiSliderFlags_NoInput); });
 			HallSliderTrack(a, b, a_max > a_min ? (*a_v - a_min) / (a_max - a_min) : 0.0f, hov, parch);
 			char buf[96];
 			std::snprintf(buf, sizeof buf, a_format, *a_v);
@@ -2039,7 +2039,7 @@ namespace Theme
 		}
 		ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(S(12.0f), S(10.0f)));
 		ImGui::SetNextItemWidth(a_width);
-		const bool changed = ImGui::SliderFloat(a_label, a_v, a_min, a_max, a_format);
+		const bool changed = ImGui::SliderFloat(a_label, a_v, a_min, a_max, a_format, ImGuiSliderFlags_NoInput);
 		ImGui::PopStyleVar();
 		return changed;
 	}
