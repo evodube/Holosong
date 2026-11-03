@@ -20,6 +20,8 @@ its own licence, reproduced or referenced below.
    https://github.com/microsoft/cppwinrt
 6. Cinzel font - Natanael Gama - SIL Open Font License 1.1
    Inter font - The Inter Project Authors (Rasmus Andersson) - SIL Open Font License 1.1
+   Roboto Condensed font - The Roboto Project Authors - SIL Open Font License 1.1
+   (static Regular and Bold instances of the variable font from github.com/google/fonts)
    Licence texts ship next to the fonts in Data/F4SE/Plugins/Holosong/Fonts.
 
 

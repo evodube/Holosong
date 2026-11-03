@@ -43,6 +43,13 @@ play/pause, next, previous and volume keys work without the cursor.
   also after a resolution change.
 - Optional: fade out during combat.
 
+## Pip-Boy look
+
+Holosong draws itself in one colour, like the Pip-Boy's screen, in the game's interface typeface (Roboto Condensed),
+with square corners. By default it follows the **HUD colour** you picked in the game's Settings > Display, live; it can
+follow the **Pip-Boy colour** instead, use a **custom** colour, or go back to the **original gold** look
+(`[Look]` in `Holosong.ini`, or Settings > Layout > Colour). The album cover can be tinted too, or keep its own colours.
+
 ## How it works on every game version
 
 - **Keys, cursor and input blocker:** read from DirectInput 8, where Fallout 4 reads the keyboard and mouse. No game
@@ -57,7 +64,7 @@ play/pause, next, previous and volume keys work without the cursor.
 GitHub Actions builds it on every push to `main` (Visual Studio 2022, xmake, Dear-Modding CommonLibF4 as a submodule).
 The packaged mod is published to the `dist` branch and as a workflow artifact.
 
-Fonts: Cinzel and Inter (SIL Open Font License, see `assets/fonts`).
+Fonts: Cinzel, Inter and Roboto Condensed (SIL Open Font License, see `assets/fonts`).
 
 ## Licence
 

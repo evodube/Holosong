@@ -84,6 +84,10 @@ namespace Widget
 			int   scalePct = 100;
 			int   opacityPct = 95;
 			int   controlsOpacityPct = 100;  // album cover and controls (buttons, bars, sliders); text never fades
+			// look: 0 = Hearthsong gold, 1 = the game's HUD colour, 2 = the game's Pip-Boy colour, 3 = custom
+			int   colorMode = 1;
+			int   customR = 20, customG = 255, customB = 23;
+			bool  tintArt = true;  // the album cover in the colour too (else its own colours)
 			bool  showHeader = true, showArt = true, showProgress = true, showSound = true;
 			bool  locked = false;
 			// safety
@@ -203,6 +207,11 @@ namespace Widget
 			Write("Widget", "iScale", std::to_string(c.scalePct));
 			Write("Widget", "iOpacity", std::to_string(c.opacityPct));
 			Write("Widget", "iCoverButtonsOpacity", std::to_string(c.controlsOpacityPct));
+			Write("Look", "iColorMode", std::to_string(c.colorMode));
+			Write("Look", "iCustomRed", std::to_string(c.customR));
+			Write("Look", "iCustomGreen", std::to_string(c.customG));
+			Write("Look", "iCustomBlue", std::to_string(c.customB));
+			Write("Look", "bTintAlbumArt", B(c.tintArt));
 			Write("Widget", "bShowTitleBar", B(c.showHeader));
 			Write("Widget", "bShowAlbumArt", B(c.showArt));
 			Write("Widget", "bShowProgress", B(c.showProgress));
@@ -824,6 +833,183 @@ namespace Widget
 		ImU32 kGold() { return Col(218, 184, 124); }
 		ImU32 kGoldDim() { return Col(150, 126, 88); }
 
+		// ================================================================ colour (Pip-Boy look)
+		// Everything is drawn as usual, then every colour on screen is mapped by its brightness onto one colour, like
+		// the Pip-Boy's monochrome screen: dark stays dark, light becomes the full colour (Recolour, after Render).
+		bool  PipBoy() { return cfg.colorMode != 0; }
+		float Corner(float a_r) { return PipBoy() ? 0.0f : a_r; }  // square corners in the Pip-Boy look
+
+		float       g_tint[3] = { 20.0f / 255.0f, 1.0f, 23.0f / 255.0f };  // the colour in use (0-1)
+		std::string g_tintSource = "default green";
+		float       g_tintCheckAt = -100.0f;
+
+		struct KeepColour
+		{
+			ImDrawList* dl;
+			int         from, to;
+		};
+		std::vector<KeepColour> g_keepColour;  // vertices left in their own colours (the album cover, if not tinted)
+
+		// The game's own settings, live: Settings > Display > HUD Color / Pip-Boy Color
+		RE::Setting*      g_hudSet[3]{};
+		RE::Setting*      g_pipSet[3]{};
+		bool              g_colourSearched = false;
+		std::atomic<bool> g_liveColourBroken{ false };
+
+		void FindColourSettingsRaw()
+		{
+			static constexpr const char* hud[3] = { "iHUDColorR:Interface", "iHUDColorG:Interface", "iHUDColorB:Interface" };
+			static constexpr const char* pip[3] = { "fPipboyEffectColorR:Pipboy", "fPipboyEffectColorG:Pipboy", "fPipboyEffectColorB:Pipboy" };
+			for (int i = 0; i < 3; ++i) {
+				g_hudSet[i] = RE::GetINISetting(hud[i]);
+				g_pipSet[i] = RE::GetINISetting(pip[i]);
+			}
+		}
+
+		bool ReadLiveColourRaw(int a_mode, float* a_out)
+		{
+			if (a_mode == 1) {
+				if (!g_hudSet[0] || !g_hudSet[1] || !g_hudSet[2]) {
+					return false;
+				}
+				for (int i = 0; i < 3; ++i) {
+					a_out[i] = std::clamp(g_hudSet[i]->GetInt() / 255.0f, 0.0f, 1.0f);
+				}
+				return true;
+			}
+			if (!g_pipSet[0] || !g_pipSet[1] || !g_pipSet[2]) {
+				return false;
+			}
+			for (int i = 0; i < 3; ++i) {
+				const float v = g_pipSet[i]->GetFloat();
+				a_out[i] = std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 0.0f;
+			}
+			return true;
+		}
+
+		bool SafeReadLiveColour(int a_mode, float* a_out)  // no C++ objects here: __try needs that
+		{
+			if (g_liveColourBroken) {
+				return false;
+			}
+			__try {
+				if (!g_colourSearched) {
+					g_colourSearched = true;
+					FindColourSettingsRaw();
+				}
+				return ReadLiveColourRaw(a_mode, a_out);
+			} __except (SehFilter(GetExceptionInformation(), "ReadGameColour")) {
+				g_liveColourBroken = true;
+				return false;
+			}
+		}
+
+		// Fallback: the same settings as saved in Documents\My Games\Fallout4\Fallout4Prefs.ini (read at start)
+		bool  g_fileHudOk = false, g_filePipOk = false;
+		float g_fileHud[3]{}, g_filePip[3]{};
+
+		void ReadPrefsFile()
+		{
+			PWSTR docs = nullptr;
+			if (FAILED(::SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs)) || !docs) {
+				return;
+			}
+			const fs::path ini = fs::path(docs) / L"My Games" / L"Fallout4" / L"Fallout4Prefs.ini";
+			::CoTaskMemFree(docs);
+			std::error_code ec;
+			if (!fs::exists(ini, ec)) {
+				spdlog::info("Fallout4Prefs.ini not found - the game's colours come from the game itself only");
+				return;
+			}
+			const std::string path = ini.string();
+			const char*       hud[3] = { "iHUDColorR", "iHUDColorG", "iHUDColorB" };
+			const char*       pip[3] = { "fPipboyEffectColorR", "fPipboyEffectColorG", "fPipboyEffectColorB" };
+			g_fileHudOk = g_filePipOk = true;
+			for (int i = 0; i < 3; ++i) {
+				const int v = static_cast<int>(::GetPrivateProfileIntA("Interface", hud[i], -1, path.c_str()));
+				g_fileHudOk = g_fileHudOk && v >= 0;
+				g_fileHud[i] = std::clamp(v / 255.0f, 0.0f, 1.0f);
+				char buf[32]{};
+				::GetPrivateProfileStringA("Pipboy", pip[i], "", buf, sizeof buf, path.c_str());
+				const float f = buf[0] ? static_cast<float>(std::atof(buf)) : -1.0f;
+				g_filePipOk = g_filePipOk && f >= 0.0f;
+				g_filePip[i] = std::clamp(f, 0.0f, 1.0f);
+			}
+		}
+
+		// Which colour to draw in (twice a second: a change in the game's Display settings shows right away)
+		void UpdateTint()
+		{
+			if (!PipBoy() || g_time - g_tintCheckAt < 0.5f) {
+				return;
+			}
+			g_tintCheckAt = g_time;
+			float       c[3] = { 20.0f / 255.0f, 1.0f, 23.0f / 255.0f };
+			std::string src = "default green";
+			if (cfg.colorMode == 3) {
+				c[0] = cfg.customR / 255.0f, c[1] = cfg.customG / 255.0f, c[2] = cfg.customB / 255.0f;
+				src = "custom";
+			} else if (g_gameLoaded && SafeReadLiveColour(cfg.colorMode, c)) {
+				src = cfg.colorMode == 1 ? "the game's HUD colour" : "the game's Pip-Boy colour";
+			} else if (cfg.colorMode == 1 && g_fileHudOk) {
+				std::copy(std::begin(g_fileHud), std::end(g_fileHud), c);
+				src = "HUD colour from Fallout4Prefs.ini";
+			} else if (cfg.colorMode == 2 && g_filePipOk) {
+				std::copy(std::begin(g_filePip), std::end(g_filePip), c);
+				src = "Pip-Boy colour from Fallout4Prefs.ini";
+			}
+			// always full brightness, so a dark colour choice can't make the widget unreadable
+			const float mx = (std::max)({ c[0], c[1], c[2] });
+			if (mx < 0.02f) {
+				c[0] = 20.0f / 255.0f, c[1] = 1.0f, c[2] = 23.0f / 255.0f;
+				src += " (black - default green used)";
+			} else {
+				for (float& v : c) {
+					v /= mx;
+				}
+			}
+			const bool changed = std::fabs(c[0] - g_tint[0]) + std::fabs(c[1] - g_tint[1]) + std::fabs(c[2] - g_tint[2]) > 0.01f || src != g_tintSource;
+			std::copy(std::begin(c), std::end(c), g_tint);
+			if (changed) {
+				g_tintSource = src;
+				spdlog::info("Colour: {} ({:.0f}, {:.0f}, {:.0f})", src, c[0] * 255.0f, c[1] * 255.0f, c[2] * 255.0f);
+			}
+		}
+
+		// After ImGui::Render: every vertex colour -> the same brightness of the one colour
+		void Recolour(ImDrawData* a_dd)
+		{
+			if (!PipBoy() || !a_dd) {
+				return;
+			}
+			float top[3], base[3];
+			for (int i = 0; i < 3; ++i) {
+				top[i] = g_tint[i] * 255.0f;
+				base[i] = top[i] * 0.025f;  // black becomes a very dark shade of the colour
+			}
+			for (int n = 0; n < a_dd->CmdListsCount; ++n) {
+				ImDrawList* dl = a_dd->CmdLists[n];
+				for (int i = 0; i < dl->VtxBuffer.Size; ++i) {
+					bool keep = false;
+					for (const auto& k : g_keepColour) {
+						if (k.dl == dl && i >= k.from && i < k.to) {
+							keep = true;
+							break;
+						}
+					}
+					if (keep) {
+						continue;
+					}
+					ImU32&      col = dl->VtxBuffer[i].col;
+					const float r = static_cast<float>((col >> IM_COL32_R_SHIFT) & 0xFF), g = static_cast<float>((col >> IM_COL32_G_SHIFT) & 0xFF),
+								b = static_cast<float>((col >> IM_COL32_B_SHIFT) & 0xFF);
+					const float t = (std::min)(1.0f, (0.299f * r + 0.587f * g + 0.114f * b) / 255.0f * 1.15f);
+					const auto  ch = [&](int c) { return static_cast<ImU32>(base[c] + (top[c] - base[c]) * t + 0.5f); };
+					col = (col & IM_COL32_A_MASK) | (ch(0) << IM_COL32_R_SHIFT) | (ch(1) << IM_COL32_G_SHIFT) | (ch(2) << IM_COL32_B_SHIFT);
+				}
+			}
+		}
+
 		float Ease(ImGuiID a_id, bool a_on, float a_speed = 14.0f)
 		{
 			float*      v = ImGui::GetStateStorage()->GetFloatRef(a_id, 0.0f);
@@ -932,12 +1118,12 @@ namespace Widget
 		// Smoked-glass panel of Hearthframe's Modern look
 		void Panel(ImDrawList* a_dl, ImVec2 a_a, ImVec2 a_b, bool a_cursor)
 		{
-			const float r = U(12.0f);
+			const float r = Corner(U(12.0f));
 			const int   op = std::clamp(cfg.opacityPct, 30, 100);
 			a_dl->AddRectFilled(a_a, a_b, Col(13, 13, 15, static_cast<int>(255 * op / 100.0f)), r);
 			// glass sheen across the full width with the panel's own rounded corners (no hard side edges)
 			TopGlow(a_dl, a_a + ImVec2(1.0f, 1.0f), a_b - ImVec2(1.0f, 1.0f), (std::max)(0.0f, r - 1.0f), U(120.0f), Col(255, 255, 255, 10));
-			CrispRect(a_dl, a_a, a_b, a_cursor ? Col(218, 184, 124, 120) : Col(255, 255, 255, 26), r);
+			CrispRect(a_dl, a_a, a_b, PipBoy() ? Col(218, 184, 124, a_cursor ? 220 : 150) : a_cursor ? Col(218, 184, 124, 120) : Col(255, 255, 255, 26), r);
 			// warm accent line along the top edge, brightest in the middle
 			const float mid = (a_a.x + a_b.x) * 0.5f, half = (a_b.x - a_a.x) * 0.32f;
 			const ImU32 acc = Col(218, 184, 124, 200), clear = Col(218, 184, 124, 0);
@@ -1061,7 +1247,7 @@ namespace Widget
 			const float h = Ease(ImGui::GetItemID(), hov);
 			auto*       dl = ImGui::GetWindowDrawList();
 			const ImVec2 a = a_p, b = a_p + a_size, c = (a + b) * 0.5f;
-			const float  r = U(6.0f);
+			const float  r = Corner(U(6.0f));
 			ImU32        icon = a_enabled ? kText() : Col(255, 255, 255, 60);
 			switch (a_style) {
 			case BtnStyle::Ghost:
@@ -1091,8 +1277,13 @@ namespace Widget
 			case BtnStyle::Round:
 				{
 					const float rr = (b.x - a.x) * 0.5f;
-					dl->AddCircleFilled(c, rr, hov ? Col(255, 255, 255, 26) : Col(255, 255, 255, 8), 32);
-					dl->AddCircle(c, rr, hov ? kGold() : Col(255, 255, 255, 50), 32, U(1.2f));
+					if (PipBoy()) {  // square, like the Pip-Boy's boxes
+						dl->AddRectFilled(a, b, hov ? Col(255, 255, 255, 26) : Col(255, 255, 255, 8));
+						CrispRect(dl, a, b, hov ? kGold() : Col(255, 255, 255, 70), 0.0f);
+					} else {
+						dl->AddCircleFilled(c, rr, hov ? Col(255, 255, 255, 26) : Col(255, 255, 255, 8), 32);
+						dl->AddCircle(c, rr, hov ? kGold() : Col(255, 255, 255, 50), 32, U(1.2f));
+					}
 					icon = hov ? kGold() : kText();
 					break;
 				}
@@ -1118,11 +1309,17 @@ namespace Widget
 			const float t = Ease(ImGui::GetItemID(), *a_v, 14.0f);
 			auto*       dl = ImGui::GetWindowDrawList();
 			const ImVec2 a = a_p, b = a_p + size;
-			const float  r = size.y * 0.5f;
+			const float  r = PipBoy() ? 0.0f : size.y * 0.5f;
 			const ImVec4 off = ImGui::ColorConvertU32ToFloat4(Col(255, 255, 255, 28)), on = ImGui::ColorConvertU32ToFloat4(kGold());
 			const ImVec4 mix(off.x + (on.x - off.x) * t, off.y + (on.y - off.y) * t, off.z + (on.z - off.z) * t, off.w + (on.w - off.w) * t);
 			dl->AddRectFilled(a, b, ImGui::ColorConvertFloat4ToU32(mix), r);
 			dl->AddRect(a, b, hov ? kGold() : Col(255, 255, 255, static_cast<int>(40 * (1 - t))), r, 0, U(1.0f));
+			if (PipBoy()) {  // square box sliding along a square track
+				const float  k = size.y * 0.5f - U(3.5f);
+				const ImVec2 kc(a.x + size.y * 0.5f + (size.x - size.y) * t, (a.y + b.y) * 0.5f);
+				dl->AddRectFilled(kc - ImVec2(k, k), kc + ImVec2(k, k), t > 0.5f ? Col(0, 0, 0) : Col(250, 248, 244));
+				return pressed;
+			}
 			const ImVec2 kn(a.x + r + (size.x - 2 * r) * t, (a.y + b.y) * 0.5f);
 			dl->AddCircleFilled(kn + ImVec2(0, U(1.5f)), r - U(3.0f), Col(0, 0, 0, 80), 24);
 			dl->AddCircleFilled(kn, r - U(3.5f), Col(250, 248, 244), 24);
@@ -1174,7 +1371,7 @@ namespace Widget
 			}
 			dl->AddRectFilledMultiColor(ImVec2(bx0, a_y - U(1.0f)), ImVec2(gx, a_y + U(1.0f)), kGoldDim(), kGold(), kGold(), kGoldDim());
 			const float hw = U(2.0f + 1.0f * h), hh = U(5.0f + 2.0f * h);
-			dl->AddRectFilled(ImVec2(gx - hw, a_y - hh), ImVec2(gx + hw, a_y + hh), kGold(), hw);
+			dl->AddRectFilled(ImVec2(gx - hw, a_y - hh), ImVec2(gx + hw, a_y + hh), kGold(), Corner(hw));
 			if (hov && g_drag.mode == Grab::None) {
 				ImGui::SetTooltip("Click to jump there");
 			}
@@ -1220,7 +1417,7 @@ namespace Widget
 				if (known) {
 					dl->AddRectFilledMultiColor(ImVec2(a_x0, a_y - U(1.0f)), ImVec2(gx, a_y + U(1.0f)), kGoldDim(), kGold(), kGold(), kGoldDim());
 					const float hw = U(2.0f + 1.0f * h), hh = U(8.0f + 2.0f * h);
-					dl->AddRectFilled(ImVec2(gx - hw, a_y - hh), ImVec2(gx + hw, a_y + hh), kGold(), hw);
+					dl->AddRectFilled(ImVec2(gx - hw, a_y - hh), ImVec2(gx + hw, a_y + hh), kGold(), Corner(hw));
 				}
 			}
 			if (a_number) {
@@ -1237,11 +1434,22 @@ namespace Widget
 		void ArtBox(ImDrawList* a_dl, ImVec2 a_a, float a_size, float a_r, bool a_label)
 		{
 			const ImVec2 b = a_a + ImVec2(a_size, a_size);
+			a_r = Corner(a_r);
 			FadeControls fade;  // the cover uses the "Album cover and buttons" opacity
 			SoftShadow(a_dl, a_a, b, a_r, U(10.0f), 140);
 			if (g_art) {
+				const int first = a_dl->VtxBuffer.Size;
 				a_dl->AddImageRounded(reinterpret_cast<ImTextureID>(g_art), a_a, b, ImVec2(0, 0), ImVec2(1, 1), Col(255, 255, 255), a_r);
-				a_dl->AddRect(a_a, b, Col(255, 255, 255, 26), a_r, 0, U(1.0f));
+				if (PipBoy() && !cfg.tintArt) {
+					g_keepColour.push_back({ a_dl, first, a_dl->VtxBuffer.Size });  // the cover keeps its own colours
+				}
+				if (PipBoy()) {  // the screen's scan lines over the cover
+					const float step = (std::max)(2.0f, std::round(U(3.0f)));
+					for (float y = std::floor(a_a.y) + 1.0f; y < b.y; y += step) {
+						a_dl->AddRectFilled(ImVec2(a_a.x, y), ImVec2(b.x, y + 1.0f), Col(0, 0, 0, 46));
+					}
+				}
+				a_dl->AddRect(a_a, b, PipBoy() ? Col(218, 184, 124, 140) : Col(255, 255, 255, 26), a_r, 0, U(1.0f));
 				return;
 			}
 			a_dl->AddRectFilled(a_a, b, Col(10, 10, 12), a_r);
@@ -1472,8 +1680,9 @@ namespace Widget
 			if (cfg.showHeader) {
 				const float hh = U(46.0f);
 				const float ts = U(18.0f);
-				dl->AddText(FTitle(), ts, ImVec2(x0 + U(1.0f), y + U(4.0f)), Col(0, 0, 0, 120), "Now Playing");
-				dl->AddText(FTitle(), ts, ImVec2(x0, y + U(2.0f)), kText(), "Now Playing");
+				const char* title = PipBoy() ? "NOW PLAYING" : "Now Playing";
+				dl->AddText(FTitle(), ts, ImVec2(x0 + U(1.0f), y + U(4.0f)), Col(0, 0, 0, 120), title);
+				dl->AddText(FTitle(), ts, ImVec2(x0, y + U(2.0f)), kText(), title);
 				const std::string sub = a_m.hasSession ? (a_m.playing ? "Spotify  \xC2\xB7  playing" : "Spotify  \xC2\xB7  paused") : "Spotify";
 				dl->AddText(FText(), U(11.0f), ImVec2(x0, y + U(26.0f)), kDim(), cfg.anyPlayer && a_m.hasSession ? (a_m.playing ? "Playing" : "Paused") : sub.c_str());
 				if (g_cursor) {
@@ -1915,6 +2124,51 @@ namespace Widget
 						MarkDirty();
 					}
 					Gap();
+					Theme::SectionLabel("Colour");
+					Row("Colour", "Holosong draws itself in one colour, like the Pip-Boy's screen.\nHUD / Pip-Boy colour: the one you picked in the game's Settings > Display - a change there shows right away.");
+					{
+						const char* names[] = { "HUD colour", "Pip-Boy colour", "Custom", "Original gold" };
+						const int   modes[] = { 1, 2, 3, 0 };
+						for (int i = 0; i < 4; ++i) {
+							if (i == 2) {
+								ImGui::SetCursorPosX(ImGui::GetCursorPosX() + SS(320.0f));
+							} else if (i) {
+								ImGui::SameLine(0.0f, SS(6.0f));
+							}
+							ImGui::PushID(700 + i);
+							if (Theme::Chip(names[i], cfg.colorMode == modes[i]) && cfg.colorMode != modes[i]) {
+								const bool fontsChange = (cfg.colorMode == 0) != (modes[i] == 0);
+								cfg.colorMode = modes[i];
+								g_tintCheckAt = -100.0f;
+								if (fontsChange) {
+									g_pendingFonts = true;  // Roboto Condensed <-> Inter + Cinzel
+								}
+								MarkDirty();
+							}
+							ImGui::PopID();
+						}
+					}
+					if (PipBoy()) {
+						ImGui::SetCursorPosX(ImGui::GetCursorPosX() + SS(320.0f));
+						Theme::TextItalic("Now: %s", g_tintSource.c_str());
+					}
+					if (cfg.colorMode == 3) {
+						const char* ch[] = { "Red", "Green", "Blue" };
+						int*        v[] = { &cfg.customR, &cfg.customG, &cfg.customB };
+						for (int i = 0; i < 3; ++i) {
+							Row(ch[i], "Your own colour (0 - 255 each). It's always shown at full brightness, so it stays readable.");
+							ImGui::PushID(710 + i);
+							if (Theme::SliderInt("##rgb", v[i], 0, 255, "%d", ctl)) {
+								g_tintCheckAt = -100.0f;
+								MarkDirty();
+							}
+							ImGui::PopID();
+						}
+					}
+					if (PipBoy()) {
+						ToggleRow("Album cover in the colour too", "On: the cover is shown in the same colour, like a picture on the Pip-Boy.\nOff: the cover keeps its own colours.", &cfg.tintArt);
+					}
+					Gap();
 					Theme::SectionLabel("Show");
 					ToggleRow("Title bar", "\"Now Playing\" with the settings and close buttons. Without it, there's a slim strip along the top for the settings and close buttons.", &cfg.showHeader);
 					ToggleRow("Album art", nullptr, &cfg.showArt);
@@ -2122,7 +2376,11 @@ namespace Widget
 				ImGui_ImplDX11_InvalidateDeviceObjects();
 			}
 			const std::string own = FontDir();
-			const std::string display = own + "Cinzel-SemiBold.ttf", uiReg = own + "Inter-Regular.ttf", uiSemi = own + "Inter-SemiBold.ttf", uiItal = own + "Inter-Italic.ttf";
+			std::error_code   fec;
+			// Pip-Boy look: Roboto Condensed (the game's own interface typeface), else Inter + Cinzel
+			const bool        pb = PipBoy() && fs::exists(fs::path(own + "RobotoCondensed-Regular.ttf"), fec) && fs::exists(fs::path(own + "RobotoCondensed-Bold.ttf"), fec);
+			const std::string display = own + (pb ? "RobotoCondensed-Bold.ttf" : "Cinzel-SemiBold.ttf"), uiReg = own + (pb ? "RobotoCondensed-Regular.ttf" : "Inter-Regular.ttf"),
+							  uiSemi = own + (pb ? "RobotoCondensed-Bold.ttf" : "Inter-SemiBold.ttf"), uiItal = own + (pb ? "RobotoCondensed-Regular.ttf" : "Inter-Italic.ttf");
 			Theme::FontFiles files{ regular.c_str(), bold.c_str(), italic.c_str() };
 			files.display = display.c_str();
 			files.uiRegular = uiReg.c_str();
@@ -2147,7 +2405,7 @@ namespace Widget
 			g_fText = load(uiReg, (std::max)(6.0f, 13.0f * g_fontK));
 			g_fSemi = load(uiSemi, (std::max)(6.0f, 17.0f * g_fontK));
 			g_fTitle = load(display, (std::max)(6.0f, 18.0f * g_fontK));
-			spdlog::info("UI: screen scale {:.2f}, widget {}%, fonts {}", screen, cfg.scalePct, g_fText ? "Inter + Cinzel" : "MISSING (Data\\F4SE\\Plugins\\Holosong\\Fonts)");
+			spdlog::info("UI: screen scale {:.2f}, widget {}%, fonts {}", screen, cfg.scalePct, g_fText ? (pb ? "Roboto Condensed" : "Inter + Cinzel") : "MISSING (Data\\F4SE\\Plugins\\Holosong\\Fonts)");
 		}
 
 		bool InitImGui()
@@ -2231,6 +2489,12 @@ namespace Widget
 		cfg.scalePct = ReadInt("Widget", "iScale", 100, 50, 100);
 		cfg.opacityPct = ReadInt("Widget", "iOpacity", 95, 30, 100);
 		cfg.controlsOpacityPct = ReadInt("Widget", "iCoverButtonsOpacity", 100, 10, 100);
+		cfg.colorMode = ReadInt("Look", "iColorMode", 1, 0, 3);
+		cfg.customR = ReadInt("Look", "iCustomRed", 20, 0, 255);
+		cfg.customG = ReadInt("Look", "iCustomGreen", 255, 0, 255);
+		cfg.customB = ReadInt("Look", "iCustomBlue", 23, 0, 255);
+		cfg.tintArt = ReadBool("Look", "bTintAlbumArt", true);
+		ReadPrefsFile();
 		cfg.showHeader = ReadBool("Widget", "bShowTitleBar", true);
 		cfg.showArt = ReadBool("Widget", "bShowAlbumArt", true);
 		cfg.showProgress = ReadBool("Widget", "bShowProgress", true);
@@ -2515,6 +2779,8 @@ namespace Widget
 			g_wheelFrame = 0.0f;
 		}
 		UpdateArt();
+		UpdateTint();
+		g_keepColour.clear();
 
 		ImGui_ImplDX11_NewFrame();
 		ImGui::NewFrame();
@@ -2537,6 +2803,7 @@ namespace Widget
 			g_status.clear();
 		}
 		ImGui::Render();
+		Recolour(ImGui::GetDrawData());
 
 		ID3D11RenderTargetView* rtv = nullptr;
 		g_dev->CreateRenderTargetView(back, nullptr, &rtv);
