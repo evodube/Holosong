@@ -832,10 +832,19 @@ namespace Widget
 		}
 
 		// DirectInput calls this on the game's input thread for every key / mouse event (Input.cpp)
+		// Keys come from up to three places (the keyboard hook, the game's own input events, Windows' key state) - each
+		// press and release counts once, whichever reports it first.
+		std::atomic<bool> g_keyState[256]{};
+
 		void OnInputEvent(const Input::Event& a_e)
 		{
+			if (a_e.kind == Input::Kind::Key) {
+				if (a_e.code >= 256 || g_keyState[a_e.code].exchange(a_e.down) == a_e.down) {
+					return;  // another source already reported this one
+				}
+			}
 			static std::atomic<int> logged{ 0 };
-			if (a_e.kind == Input::Kind::Key && a_e.down && logged < 12) {
+			if (a_e.kind == Input::Kind::Key && a_e.down && (logged < 12 || dbg.logInput)) {
 				++logged;
 				spdlog::info("Key pressed: {} (code {:02X}){}", KeyName(DIKToVirtualKey(a_e.code)), a_e.code,
 					a_e.code == g_keyDik[kKeyCursor] ? " = cursor mode key" : a_e.code == g_keyDik[kKeyToggle] ? " = show/hide key" :
@@ -846,14 +855,13 @@ namespace Widget
 			}
 		}
 
-		// ---- last resort for the keys: Windows' key state, read every frame
-		// If something in front of our keyboard hook keeps the keys from it, the key state still changes (the game gets
-		// the keys). Read only while Fallout 4 is in front, and only until the hook gets keys of its own. It can't keep
-		// the keys from the game, but the hotkeys, the settings window and typing all work.
-		bool  g_polledDown[256]{};
-		bool  g_pollingUsed = false;
-		float g_rehookAt = -100.0f;
-		int   g_rehooks = 0;
+		// ---- one more source for the keys: Windows' key state, read every frame while Fallout 4 is in front
+		// (if something in front of our keyboard hook keeps the keys from it, the key state still changes).
+		// Always on: earlier it stopped for good once the hook saw a single key, and after an Alt+Tab that left no
+		// source at all.
+		bool g_polledDown[256]{};
+		bool g_pollingUsed = false;
+		bool g_wasInFront = true;
 
 		bool GameWindowInFront()
 		{
@@ -866,6 +874,19 @@ namespace Widget
 		void PollKeys()
 		{
 			const bool front = GameWindowInFront();
+			if (!front && g_wasInFront) {
+				// Alt+Tab, the Steam overlay...: keys let go while another window had them never reach us - let them
+				// all go now, so nothing stays "held" (and the next press of a hotkey counts)
+				for (std::uint32_t k = 0; k < 256; ++k) {
+					if (g_keyState[k]) {
+						OnInputEvent({ Input::Kind::Key, k, false });
+					}
+				}
+				spdlog::info("Fallout 4 lost focus: all keys let go");
+			} else if (front && !g_wasInFront) {
+				spdlog::info("Fallout 4 has focus again");
+			}
+			g_wasInFront = front;
 			for (int vk = 0x08; vk < 0xFF; ++vk) {
 				if (vk == VK_SHIFT || vk == VK_CONTROL || vk == VK_MENU || (vk >= VK_LBUTTON && vk <= VK_XBUTTON2)) {
 					continue;  // the left/right versions are read instead; mouse buttons come from the mouse hook
@@ -875,23 +896,63 @@ namespace Widget
 					continue;
 				}
 				g_polledDown[vk] = down;
-				if (Input::LowLevelKeySeen() || !g_gameLoaded) {
-					continue;  // the hook has the keys (or it's too early): just keep track
-				}
-				const std::uint32_t dik = VirtualKeyToDIK(vk);
-				if (!dik) {
+				if (!g_gameLoaded) {
 					continue;
 				}
-				if (down && g_time - g_rehookAt > 15.0f && g_rehooks < 4) {  // first try putting the hook back in front
-					g_rehookAt = g_time;
-					++g_rehooks;
-					Input::Rehook(0);
+				const std::uint32_t dik = VirtualKeyToDIK(vk);
+				if (!dik || dik >= 256) {
+					continue;
 				}
-				if (!g_pollingUsed) {
+				if (!g_pollingUsed && down && !g_keyState[dik]) {
 					g_pollingUsed = true;
-					spdlog::warn("Keys: the keyboard hook gets no keys (something in front of it keeps them) - reading the key state instead");
+					spdlog::info("Keys: the key state got a key before the hooks did (something in front of the keyboard hook keeps them) - it covers for them");
 				}
 				OnInputEvent({ Input::Kind::Key, dik, down });
+			}
+		}
+
+		// ---- the game's own input events: the keys as Fallout 4 itself sees them (after DirectInput / raw input, untouched by
+		// overlays and focus changes). A listener among the game's menu input handlers.
+		class GameKeys final : public RE::BSInputEventUser
+		{
+		public:
+			bool ShouldHandleEvent(const RE::InputEvent* a_e) override
+			{
+				return a_e && a_e->device.get() == RE::INPUT_DEVICE::kKeyboard;
+			}
+			void OnButtonEvent(const RE::ButtonEvent* a_e) override
+			{
+				if (!a_e || a_e->device.get() != RE::INPUT_DEVICE::kKeyboard || a_e->idCode < 0 || a_e->idCode >= 256) {
+					return;
+				}
+				if (a_e->QJustPressed()) {
+					OnInputEvent({ Input::Kind::Key, static_cast<std::uint32_t>(a_e->idCode), true });
+				} else if (a_e->QReleased()) {
+					OnInputEvent({ Input::Kind::Key, static_cast<std::uint32_t>(a_e->idCode), false });
+				}
+			}
+		};
+		GameKeys* g_gameKeys = nullptr;
+
+		bool RegisterGameKeysRaw()
+		{
+			auto* mc = RE::MenuControls::GetSingleton();
+			if (!mc) {
+				return false;
+			}
+			if (!g_gameKeys) {
+				g_gameKeys = new GameKeys();  // lives as long as the game
+			}
+			mc->RegisterHandler(g_gameKeys);
+			return true;
+		}
+
+		bool SafeRegisterGameKeys()  // no C++ objects here: __try needs that
+		{
+			__try {
+				return RegisterGameKeysRaw();
+			} __except (SehFilter(GetExceptionInformation(), "RegisterGameKeys")) {
+				return false;
 			}
 		}
 
@@ -2118,104 +2179,6 @@ namespace Widget
 			return cfg.showSound && left >= soundH ? soundH : 0.0f;
 		}
 
-		// Small slider for the quick bar: value 0-1, returns true while it changes
-		bool QuickSlider(const char* a_id, float a_x0, float a_x1, float a_y, float* a_v)
-		{
-			auto* dl = ImGui::GetWindowDrawList();
-			ImGui::SetCursorScreenPos(ImVec2(a_x0, a_y - U(9.0f)));
-			ImGui::InvisibleButton(a_id, ImVec2((std::max)(1.0f, a_x1 - a_x0), U(18.0f)));
-			const bool  active = ImGui::IsItemActive();
-			const float h = Ease(ImGui::GetItemID(), ImGui::IsItemHovered() || active);
-			bool        changed = false;
-			if (active) {
-				*a_v = std::clamp((ImGui::GetIO().MousePos.x - a_x0) / (a_x1 - a_x0), 0.0f, 1.0f);
-				changed = true;
-			} else if (ImGui::IsItemHovered() && g_wheelFrame != 0.0f) {
-				*a_v = std::clamp(*a_v + (g_wheelFrame > 0.0f ? 0.05f : -0.05f), 0.0f, 1.0f);
-				changed = true;
-			}
-			const float gx = a_x0 + (a_x1 - a_x0) * *a_v;
-			FadeControls fade;
-			dl->AddRectFilled(ImVec2(a_x0, a_y - U(1.0f)), ImVec2(a_x1, a_y + U(1.0f)), Col(255, 255, 255, 34), Corner(U(1.0f)));
-			dl->AddRectFilledMultiColor(ImVec2(a_x0, a_y - U(1.0f)), ImVec2(gx, a_y + U(1.0f)), kGoldDim(), kGold(), kGold(), kGoldDim());
-			const float hw = U(2.0f + 1.0f * h), hh = U(7.0f + 2.0f * h);
-			dl->AddRectFilled(ImVec2(gx - hw, a_y - hh), ImVec2(gx + hw, a_y + hh), kGold(), Corner(hw));
-			return changed;
-		}
-
-		// Cursor mode: a slim bar under the widget (above it near the bottom of the screen) with the settings button
-		// and the widget's scale and opacity, so they're right there without opening the settings window.
-		void DrawQuickBar(ImVec2 a, ImVec2 b)
-		{
-			const float  barH = U(44.0f), w = (std::max)(b.x - a.x, U(340.0f));
-			const float  gapY = U(12.0f);  // clear of the widget's resize edge
-			ImVec2       p(a.x, b.y + gapY);
-			if (p.y + barH > g_displayH - 4.0f) {
-				p.y = a.y - gapY - barH;
-			}
-			p.x = std::clamp(p.x, 4.0f, (std::max)(4.0f, g_displayW - w - 4.0f));
-			p.y = std::clamp(p.y, 4.0f, (std::max)(4.0f, g_displayH - barH - 4.0f));
-			const ImVec2 q = p + ImVec2(w, barH);
-			ImGui::SetNextWindowPos(p, ImGuiCond_Always);
-			ImGui::SetNextWindowSize(ImVec2(w, barH), ImGuiCond_Always);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
-			ImGui::Begin("##hs_quick", nullptr,
-				ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings |
-					ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoScrollWithMouse);
-			ImGui::PopStyleVar(3);
-			auto* dl = ImGui::GetWindowDrawList();
-			Panel(dl, p, q, true);
-			const float cy = (p.y + q.y) * 0.5f, pad = U(10.0f), bs = U(30.0f);
-			float       x = p.x + pad;
-			if (Button("##qset", ImVec2(x, cy - bs * 0.5f), ImVec2(bs, bs), BtnStyle::Ghost, IconGear, bs * 0.62f, true, g_settingsOpen, "All settings")) {
-				g_settingsOpen = !g_settingsOpen;
-			}
-			x += bs + U(10.0f);
-			const float ts = U(12.0f);
-			const float half = (q.x - pad - x - U(14.0f)) * 0.5f;
-			// scale 50 - 100 %
-			{
-				dl->AddText(FText(), ts, ImVec2(x, cy - ts * 0.55f), kDim(), "Scale");
-				const float lw = TextW(FText(), ts, "Opacity") + U(8.0f);
-				float       v = (cfg.scalePct - 50) / 50.0f;
-				if (QuickSlider("##qscale", x + lw, x + half - U(34.0f), cy, &v) && !cfg.locked) {
-					const int pct = 50 + static_cast<int>(std::lround(v * 50.0f));
-					if (pct != cfg.scalePct) {
-						cfg.scalePct = pct;
-						g_pendingFonts = true;
-						MarkDirty();
-					}
-				}
-				const std::string n = std::format("{}%", cfg.scalePct);
-				dl->AddText(FText(), ts, ImVec2(x + half - TextW(FText(), ts, n.c_str()), cy - ts * 0.55f), kText(), n.c_str());
-				if (ImGui::IsItemHovered() && g_drag.mode == Grab::None) {
-					ImGui::SetTooltip(cfg.locked ? "The widget is locked (Settings > Layout)" : "Widget scale - Ctrl + mouse wheel over the widget works too");
-				}
-			}
-			x += half + U(14.0f);
-			// background opacity 30 - 100 %
-			{
-				dl->AddText(FText(), ts, ImVec2(x, cy - ts * 0.55f), kDim(), "Opacity");
-				const float lw = TextW(FText(), ts, "Opacity") + U(8.0f);
-				float       v = (cfg.opacityPct - 30) / 70.0f;
-				if (QuickSlider("##qopacity", x + lw, x + half - U(34.0f), cy, &v)) {
-					const int pct = 30 + static_cast<int>(std::lround(v * 70.0f));
-					if (pct != cfg.opacityPct) {
-						cfg.opacityPct = pct;
-						MarkDirty();
-					}
-				}
-				const std::string n = std::format("{}%", cfg.opacityPct);
-				dl->AddText(FText(), ts, ImVec2(x + half - TextW(FText(), ts, n.c_str()), cy - ts * 0.55f), kText(), n.c_str());
-				if (ImGui::IsItemHovered() && g_drag.mode == Grab::None) {
-					ImGui::SetTooltip("How see-through the widget's background is");
-				}
-			}
-			ImGui::End();
-		}
-
 		void DrawWidget(const Media::Snapshot& a_m)
 		{
 			KeepOnScreen();
@@ -2263,9 +2226,6 @@ namespace Widget
 			}
 			dl->PopClipRect();
 			ImGui::End();
-			if (g_cursor && g_drag.mode == Grab::None) {
-				DrawQuickBar(a, b);
-			}
 		}
 
 		// ================================================================ settings window
@@ -2779,6 +2739,9 @@ namespace Widget
 	void OnDataLoaded()
 	{
 		Media::Start(MediaSettings());  // now, not at plugin load: Windows' media controls can stall that early in the game's start
+		if (dbg.inputSink) {
+			spdlog::info(SafeRegisterGameKeys() ? "Keys: listening to the game's own input events too" : "Keys: couldn't listen to the game's input events");
+		}
 		if (!Fenced([] { FindSoundCategories(); return true; }, "FindSoundCategories")) {
 			spdlog::warn("Could not read the game's sound categories - muting the game's music is off");
 			g_gameStateBroken = false;  // this one failing doesn't say anything about the menus / combat checks
