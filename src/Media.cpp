@@ -328,10 +328,12 @@ namespace Media
 		}
 
 		// ---- fetching the cover
-		// The song's details come with the media session, but the cover is a separate transfer from the player's own
-		// process. Inside Fallout 4 that transfer never finished on the media thread, so each try now runs on a fresh
-		// thread of its own, in a single-threaded apartment that keeps handling Windows' messages and calls while it
-		// waits (the way these transfers are meant to be waited for), for up to 10 seconds.
+		// The song's details come with the media session, but the cover is a transfer from the player's own process,
+		// and the usual way of waiting for it needs the player to call back into the game when it's ready. Windows
+		// blocks that call when the game runs with more rights than the player (Fallout 4 as administrator, Spotify
+		// not - common with Mod Organizer run as admin), and the wait never ends. So the cover is fetched without any
+		// call-back: asking the player "done yet?" (a call from the game to the player, which is allowed) until it is,
+		// then reading the picture directly. On a thread of its own, at most 10 seconds.
 		enum class Fetch
 		{
 			Ok,
@@ -351,47 +353,79 @@ namespace Media
 			std::vector<std::uint8_t> bytes;
 		};
 
+		// 1 = done, 0 = gave up waiting, -1 = failed/cancelled
 		template <class Op>
-		bool WaitPumping(const Op& a_op, HANDLE a_ev, DWORD a_ms)
+		int PollDone(const Op& a_op, ULONGLONG a_deadline)
 		{
-			::ResetEvent(a_ev);
-			a_op.Completed([a_ev](auto&&, auto&&) { ::SetEvent(a_ev); });
-			DWORD idx = 0;
-			return ::CoWaitForMultipleHandles(COWAIT_DISPATCH_CALLS | COWAIT_DISPATCH_WINDOW_MESSAGES, a_ms, 1, &a_ev, &idx) == S_OK;
+			for (;;) {
+				const auto st = a_op.Status();
+				if (st == winrt::Windows::Foundation::AsyncStatus::Completed) {
+					return 1;
+				}
+				if (st != winrt::Windows::Foundation::AsyncStatus::Started) {
+					return -1;
+				}
+				if (::GetTickCount64() > a_deadline) {
+					return 0;
+				}
+				::Sleep(25);
+			}
 		}
 
 		void FetchWorker(std::shared_ptr<FetchJob> a_job, wss::IRandomAccessStreamReference a_ref)
 		{
 			Fetch                     r = Fetch::Error;
 			std::vector<std::uint8_t> bytes;
-			bool                      apartment = false;
-			HANDLE                    ev = ::CreateEventW(nullptr, TRUE, FALSE, nullptr);
-			bool                      timedOut = false;
 			try {
-				winrt::init_apartment(winrt::apartment_type::single_threaded);
-				apartment = true;
+				winrt::init_apartment(winrt::apartment_type::multi_threaded);
 			} catch (...) {
 			}
 			try {
-				auto op = a_ref.OpenReadAsync();
-				if (!ev || !WaitPumping(op, ev, 10000)) {
+				const ULONGLONG deadline = ::GetTickCount64() + 10000;
+				auto            open = a_ref.OpenReadAsync();
+				const int       o = PollDone(open, deadline);
+				if (o == 0) {
 					r = Fetch::Timeout;
-					timedOut = true;
+					try {
+						open.Cancel();
+					} catch (...) {
+					}
+				} else if (o < 0) {
+					open.GetResults();  // throws the reason
 				} else {
-					auto       stream = op.GetResults();
+					auto       stream = open.GetResults();
 					const auto size = static_cast<std::uint32_t>((std::min)(stream.Size(), static_cast<std::uint64_t>(16u << 20)));
 					if (size == 0) {
 						r = Fetch::Empty;
 					} else {
-						wss::DataReader reader(stream.GetInputStreamAt(0));
-						auto            load = reader.LoadAsync(size);
-						if (!WaitPumping(load, ev, 10000)) {
-							r = Fetch::Timeout;
-							timedOut = true;
-						} else {
-							bytes.resize(load.GetResults());
-							reader.ReadBytes(bytes);
-							r = bytes.empty() ? Fetch::Empty : Fetch::Ok;
+						bytes.reserve(size);
+						auto input = stream.GetInputStreamAt(0);
+						r = Fetch::Ok;
+						while (bytes.size() < size) {  // straight from the stream, polled the same way
+							const auto                        want = static_cast<std::uint32_t>(size - bytes.size());
+							winrt::Windows::Storage::Streams::Buffer buf(want);
+							auto read = input.ReadAsync(buf, want, winrt::Windows::Storage::Streams::InputStreamOptions::None);
+							const int rr = PollDone(read, deadline);
+							if (rr == 0) {
+								r = Fetch::Timeout;
+								try {
+									read.Cancel();
+								} catch (...) {
+								}
+								break;
+							}
+							if (rr < 0) {
+								read.GetResults();  // throws the reason
+							}
+							const auto got = read.GetResults();
+							const auto n = got.Length();
+							if (n == 0) {
+								break;
+							}
+							bytes.insert(bytes.end(), got.data(), got.data() + n);
+						}
+						if (r == Fetch::Ok && bytes.empty()) {
+							r = Fetch::Empty;
 						}
 					}
 				}
@@ -401,9 +435,6 @@ namespace Media
 			} catch (...) {
 				r = Fetch::Error;
 			}
-			if (ev && !timedOut) {
-				::CloseHandle(ev);  // (after a timeout the transfer may still finish and signal it: left open)
-			}
 			{
 				std::lock_guard lk(a_job->m);
 				a_job->result = r;
@@ -412,9 +443,6 @@ namespace Media
 			}
 			a_job->cv.notify_all();
 			--g_artWorkers;
-			if (apartment) {
-				winrt::uninit_apartment();
-			}
 		}
 
 		Fetch FetchArtBytes(const wss::IRandomAccessStreamReference& a_ref, std::vector<std::uint8_t>& a_out)
@@ -431,7 +459,7 @@ namespace Media
 				return Fetch::Error;
 			}
 			std::unique_lock lk(job->m);
-			if (!job->cv.wait_for(lk, std::chrono::seconds(11), [&] { return job->done; })) {
+			if (!job->cv.wait_for(lk, std::chrono::seconds(12), [&] { return job->done; })) {
 				return Fetch::Timeout;
 			}
 			a_out = std::move(job->bytes);
@@ -452,7 +480,7 @@ namespace Media
 				spdlog::info("Album art: the player's picture for this song is empty");
 				return false;
 			case Fetch::Timeout:
-				spdlog::warn("Album art: the player didn't hand the picture over within 10 seconds (something in the game's process may be holding the transfer up)");
+				spdlog::warn("Album art: the player didn't hand the picture over within 10 seconds");
 				return false;
 			case Fetch::Busy:
 				spdlog::warn("Album art: earlier tries are still waiting on the player - not starting another");
@@ -625,6 +653,16 @@ namespace Media
 				}
 			}
 			spdlog::info("Windows media controls ready");
+			{
+				HANDLE          tok = nullptr;
+				TOKEN_ELEVATION el{};
+				DWORD           n = 0;
+				const bool      admin = ::OpenProcessToken(::GetCurrentProcess(), TOKEN_QUERY, &tok) && ::GetTokenInformation(tok, TokenElevation, &el, sizeof el, &n) && el.TokenIsElevated;
+				if (tok) {
+					::CloseHandle(tok);
+				}
+				spdlog::info("Fallout 4 runs as administrator: {}", admin ? "yes (players can't call back into it: the cover is fetched without call-backs)" : "no");
+			}
 
 			std::string lastTrack, lastApp, artKey;
 			int         artTries = 0;
