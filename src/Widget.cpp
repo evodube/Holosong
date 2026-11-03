@@ -528,9 +528,15 @@ namespace Widget
 		// This is the wall no other hook or mod can open: even a click that gets past every hook does nothing in the game.
 		// on the heap and never freed: releasing it while the game shuts down would call into the game too late
 		auto*             g_inputLayer = new RE::BSTSmartPointer<RE::BSInputEnableLayer>();
-		std::atomic<bool> g_layerBroken{ false };
 
-		void SetGameControlsRaw(bool a_off)
+		// Three of the game's own ways, each one fenced on its own (one failing on some game build leaves the others):
+		//  1. an input layer with every control off (looking, firing, activating, moving, menus, VATS...)
+		//  2. the "cursor" input context, the one the game's own cursor menus switch to: the mouse stops being the camera
+		//  3. the player-input block the game uses during scenes
+		using UEF = RE::UserEvents::USER_EVENT_FLAG;
+		constexpr std::int32_t kAllControls = 0xFFF;  // every flag one by one (kMovement ... kVATS), not the -1 shortcut
+
+		void LayerRaw(bool a_off)
 		{
 			auto* mgr = RE::BSInputEnableManager::GetSingleton();
 			if (!mgr) {
@@ -540,35 +546,73 @@ namespace Widget
 			if (!layer && !mgr->AllocateNewLayer(layer, "Holosong")) {
 				return;
 			}
-			if (!layer) {
-				return;
+			if (layer) {
+				mgr->EnableUserEvent(layer->layerID, static_cast<UEF>(kAllControls), !a_off, RE::UserEvents::SENDER_ID::kMenu);
 			}
-			// everything: looking, firing, activating, menus (Pip-Boy, pause), moving, jumping, VATS...
-			mgr->EnableUserEvent(layer->layerID, RE::UserEvents::USER_EVENT_FLAG::kAll, !a_off, RE::UserEvents::SENDER_ID::kMenu);
 		}
 
-		bool SafeSetGameControls(bool a_off)  // no C++ objects here: __try needs that
+		bool g_contextPushed = false;
+		void ContextRaw(bool a_off)
 		{
-			if (g_layerBroken) {
+			auto* cm = RE::ControlMap::GetSingleton();
+			if (!cm) {
+				return;
+			}
+			if (a_off && !g_contextPushed) {
+				cm->PushInputContext(RE::UserEvents::INPUT_CONTEXT_ID::kCursor);
+				g_contextPushed = true;
+			} else if (!a_off && g_contextPushed) {
+				cm->PopInputContext(RE::UserEvents::INPUT_CONTEXT_ID::kCursor);
+				g_contextPushed = false;
+			}
+		}
+
+		bool g_blockSet = false, g_blockWas = false;
+		void BlockRaw(bool a_off)
+		{
+			auto* pc = RE::PlayerControls::GetSingleton();
+			if (!pc) {
+				return;
+			}
+			if (a_off && !g_blockSet) {
+				g_blockWas = pc->blockPlayerInput;
+				pc->blockPlayerInput = true;
+				g_blockSet = true;
+			} else if (!a_off && g_blockSet) {
+				pc->blockPlayerInput = g_blockWas;
+				g_blockSet = false;
+			}
+		}
+
+		std::atomic<bool> g_lockBroken[3]{};
+		bool SafeLock(int a_which, void (*a_fn)(bool), bool a_off, const char* a_what)  // no C++ objects here: __try needs that
+		{
+			if (g_lockBroken[a_which]) {
 				return false;
 			}
 			__try {
-				SetGameControlsRaw(a_off);
+				a_fn(a_off);
 				return true;
-			} __except (SehFilter(GetExceptionInformation(), "GameControls")) {
-				g_layerBroken = true;
+			} __except (SehFilter(GetExceptionInformation(), a_what)) {
+				g_lockBroken[a_which] = true;
 				return false;
 			}
+		}
+
+		bool SafeSetGameControls(bool a_off)
+		{
+			const bool layer = SafeLock(0, LayerRaw, a_off, "GameControls.Layer");
+			const bool context = SafeLock(1, ContextRaw, a_off, "GameControls.Context");
+			const bool block = SafeLock(2, BlockRaw, a_off, "GameControls.Block");
+			spdlog::info("Game controls {}: input layer {}, cursor context {}, player input block {}", a_off ? "off (cursor mode)" : "back on",
+				layer ? "ok" : "failed", context ? "ok" : "failed", block ? "ok" : "failed");
+			return layer || context || block;
 		}
 
 		void SetGameControls(bool a_off)
 		{
 			if (auto* t = F4SE::GetTaskInterface()) {
-				t->AddTask([a_off]() {
-					if (SafeSetGameControls(a_off)) {
-						spdlog::info("Game controls {}", a_off ? "off (cursor mode)" : "back on");
-					}
-				});
+				t->AddTask([a_off]() { SafeSetGameControls(a_off); });
 			}
 		}
 
